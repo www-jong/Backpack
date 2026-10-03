@@ -264,3 +264,61 @@ enabled = true
         .iter()
         .any(|r| r.name == "computer-use@openai-bundled" && r.status == "disabled"));
 }
+
+#[test]
+#[cfg(target_os = "windows")]
+fn windows_inventory_formats_all_reported_paths_consistently() {
+    let home = TempDir::new().unwrap();
+    write(home.path(), ".agents/skills/shared/SKILL.md", "# shared");
+    write(
+        home.path(),
+        ".gemini/antigravity/skills/example/SKILL.md",
+        "# example",
+    );
+    write(home.path(), ".codex/config.toml", "invalid = [");
+    fs::create_dir_all(home.path().join("project")).unwrap();
+    let mut request = request(home.path());
+    for root in request.roots.values_mut() {
+        *root = root.replace('\\', "/");
+    }
+    request.project_path = Some(
+        home.path()
+            .join("project")
+            .to_string_lossy()
+            .replace('\\', "/"),
+    );
+    let input_home = home.path().to_string_lossy().replace('\\', "/");
+    let snapshot = scan_at(Path::new(&input_home), request).unwrap();
+    assert!(!snapshot.home.contains('/'));
+    assert!(!snapshot.project_path.unwrap().contains('/'));
+    for agent in snapshot.agents {
+        assert!(agent.config_roots.iter().all(|p| !p.contains('/')));
+        assert!(agent.executable.iter().all(|p| !p.contains('/')));
+        assert!(agent.warnings.iter().all(|w| !w.contains('/')));
+        for resource in agent.resources {
+            assert!(!resource.path.contains('/'), "{}", resource.path);
+            assert!(!resource.id.contains('/'));
+            for group in resource.details.iter().filter(|d| d.label == "파일 묶음") {
+                assert!(!group.value.contains('/'));
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn unix_inventory_preserves_backslashes_in_file_names() {
+    let home = TempDir::new().unwrap();
+    write(
+        home.path(),
+        ".agents/skills/custom\\name/SKILL.md",
+        "# custom",
+    );
+    let snapshot = scan_at(home.path(), request(home.path())).unwrap();
+    let resource = snapshot.agents[0]
+        .resources
+        .iter()
+        .find(|r| r.kind == "skill")
+        .unwrap();
+    assert!(resource.path.contains("custom\\name/SKILL.md"));
+}

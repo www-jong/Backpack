@@ -222,7 +222,12 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
 }
 
 fn display(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    let text = path.to_string_lossy();
+    if cfg!(target_os = "windows") {
+        text.replace('/', "\\")
+    } else {
+        text.into_owned()
+    }
 }
 
 fn read_text(agent: &mut Agent, path: &Path) -> Option<String> {
