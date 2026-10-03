@@ -17,8 +17,80 @@ pub struct ScanRequest {
     pub project_path: Option<String>,
     #[serde(default)]
     pub roots: BTreeMap<String, String>,
+    #[serde(default)]
+    pub custom_agents: Vec<CustomAgent>,
 }
 
+#[derive(Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomAgent {
+    pub id: String,
+    pub name: String,
+    pub executable: Option<String>,
+    pub config_root: String,
+    #[serde(default)]
+    pub config_files: Vec<String>,
+}
+const AGENT_DEFS: &[(&str, &str, &str)] = &[
+    ("codex", "Codex", ".codex"),
+    ("claude", "Claude Code", ".claude"),
+    ("antigravity", "Antigravity", ".gemini"),
+    ("opencode", "OpenCode", ".config/opencode"),
+    ("gemini", "Gemini CLI", ".gemini"),
+    ("cursor", "Cursor", ".cursor"),
+    ("copilot", "GitHub Copilot CLI", ".copilot"),
+    ("windsurf", "Windsurf / Devin", ".codeium/windsurf"),
+];
+fn validate_custom(custom: &[CustomAgent]) -> Result<(), String> {
+    if custom.len() > 32 {
+        return Err("기타 에이전트는 최대 32개까지 등록할 수 있습니다.".into());
+    }
+    let mut ids = HashSet::new();
+    for agent in custom {
+        if !agent.id.starts_with("custom-")
+            || agent.id.len() > 64
+            || !agent
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            || !ids.insert(&agent.id)
+        {
+            return Err("기타 에이전트 ID가 올바르지 않거나 중복됩니다.".into());
+        }
+        if agent.name.trim().is_empty()
+            || agent.name.len() > 100
+            || agent.name.chars().any(char::is_control)
+            || !Path::new(&agent.config_root).is_absolute()
+        {
+            return Err("이름과 설정 폴더의 절대 경로를 확인하세요.".into());
+        }
+        if agent
+            .executable
+            .as_ref()
+            .is_some_and(|p| !p.is_empty() && !Path::new(p).is_absolute())
+        {
+            return Err("실행 파일은 절대 경로여야 합니다.".into());
+        }
+        if agent.config_files.len() > 16
+            || agent.config_files.iter().any(|file| {
+                file.is_empty()
+                    || file.len() > 128
+                    || file.contains(['/', '\\', ':'])
+                    || file == "."
+                    || file == ".."
+                    || !["json", "jsonc", "toml"].contains(
+                        &Path::new(file)
+                            .extension()
+                            .and_then(|p| p.to_str())
+                            .unwrap_or(""),
+                    )
+            })
+        {
+            return Err("설정 파일은 폴더 안의 JSON·JSONC·TOML 파일 이름으로 지정하세요.".into());
+        }
+    }
+    Ok(())
+}
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
@@ -38,6 +110,8 @@ pub struct Agent {
     pub config_roots: Vec<String>,
     pub resources: Vec<Resource>,
     pub warnings: Vec<String>,
+    pub custom: bool,
+    pub inspection: String,
     #[serde(skip)]
     builtin_runtime_root: Option<PathBuf>,
 }
@@ -79,8 +153,9 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
             return Err("프로젝트 경로는 존재하는 폴더의 절대 경로여야 합니다.".into());
         }
     }
+    validate_custom(&request.custom_agents)?;
     for (id, root) in &request.roots {
-        if !["codex", "claude", "antigravity", "opencode"].contains(&id.as_str()) {
+        if !AGENT_DEFS.iter().any(|(known, _, _)| known == id) {
             return Err("지원하지 않는 에이전트 경로입니다.".into());
         }
         if !Path::new(root).is_absolute() || !Path::new(root).is_dir() {
@@ -89,17 +164,12 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
             ));
         }
     }
-    let defs = [
-        ("codex", "Codex", ".codex"),
-        ("claude", "Claude Code", ".claude"),
-        ("antigravity", "Antigravity", ".gemini"),
-        ("opencode", "OpenCode", ".config/opencode"),
-    ];
     let mut agents = Vec::new();
-    for (id, name, default_root) in defs {
+    for &(id, name, default_root) in AGENT_DEFS {
         let env_root = match id {
             "codex" => std::env::var_os("CODEX_HOME"),
             "claude" => std::env::var_os("CLAUDE_CONFIG_DIR"),
+            "copilot" => std::env::var_os("COPILOT_HOME"),
             "opencode" => std::env::var_os("OPENCODE_CONFIG_DIR").or_else(|| {
                 std::env::var_os("XDG_CONFIG_HOME")
                     .map(|p| PathBuf::from(p).join("opencode").into_os_string())
@@ -119,6 +189,8 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
             config_roots: vec![display(&root)],
             resources: vec![],
             warnings: vec![],
+            custom: false,
+            inspection: if id == "codex" { "app-server" } else { "file" }.into(),
             builtin_runtime_root: cfg!(target_os = "windows")
                 .then(|| home.join("AppData/Local/OpenAI/Codex/runtimes")),
         };
@@ -166,13 +238,30 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
                     scan_config(&mut agent, Path::new(&path), "환경 변수 지정");
                 }
             }
+            "gemini" | "cursor" | "copilot" | "windsurf" => scan_extra(&mut agent, &root, "사용자"),
             _ => {}
+        }
+        if id == "windsurf" && !request.roots.contains_key(id) {
+            let current = if cfg!(windows) {
+                home.join("AppData/Roaming/devin")
+            } else {
+                std::env::var_os("XDG_CONFIG_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(".config"))
+                    .join("devin")
+            };
+            agent.config_roots.push(display(&current));
+            scan_config(&mut agent, &current.join("mcp_config.json"), "사용자");
         }
         if let Some(p) = &project {
             let sub = match id {
                 "codex" => ".codex",
                 "claude" => ".claude",
                 "antigravity" => ".agents",
+                "gemini" => ".gemini",
+                "cursor" => ".cursor",
+                "copilot" => ".github/copilot",
+                "windsurf" => ".windsurf",
                 _ => ".opencode",
             };
             let pr = p.join(sub);
@@ -204,6 +293,19 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
                     scan_scripts(&mut agent, &pr.join("plugins"), "plugin", "프로젝트");
                     add_file(&mut agent, &p.join("AGENTS.md"), "rule", "프로젝트");
                 }
+                "gemini" | "cursor" | "copilot" | "windsurf" => {
+                    scan_extra(&mut agent, &pr, "프로젝트");
+                    if id == "copilot" {
+                        scan_config(&mut agent, &p.join(".mcp.json"), "프로젝트");
+                        scan_config(&mut agent, &p.join(".github/mcp.json"), "프로젝트");
+                        add_file(
+                            &mut agent,
+                            &p.join(".github/copilot-instructions.md"),
+                            "rule",
+                            "프로젝트",
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -212,6 +314,52 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
         agent
             .resources
             .sort_by(|a, b| (&a.kind, &a.name, &a.path).cmp(&(&b.kind, &b.name, &b.path)));
+        agents.push(agent);
+    }
+    for custom in &request.custom_agents {
+        let root = PathBuf::from(&custom.config_root);
+        let mut agent = Agent {
+            id: custom.id.clone(),
+            name: custom.name.clone(),
+            executable: custom
+                .executable
+                .as_ref()
+                .filter(|p| Path::new(p).is_file())
+                .map(|p| display(Path::new(p))),
+            config_roots: vec![display(&root)],
+            resources: vec![],
+            warnings: vec![],
+            custom: true,
+            inspection: "file".into(),
+            builtin_runtime_root: None,
+        };
+        if !root.is_dir() {
+            agent
+                .warnings
+                .push("등록한 설정 폴더를 찾을 수 없습니다.".into());
+        }
+        if custom
+            .executable
+            .as_ref()
+            .is_some_and(|p| !p.is_empty() && !Path::new(p).is_file())
+        {
+            agent
+                .warnings
+                .push("등록한 실행 파일을 찾을 수 없습니다.".into());
+        }
+        let defaults = ["settings.json", "config.json", "config.toml", "mcp.json"];
+        let files: Vec<&str> = if custom.config_files.is_empty() {
+            defaults.to_vec()
+        } else {
+            custom.config_files.iter().map(String::as_str).collect()
+        };
+        for file in files {
+            scan_config(&mut agent, &root.join(file), "사용자 지정");
+        }
+        scan_skills(&mut agent, &root.join("skills"), "사용자 지정");
+        scan_rules(&mut agent, &root.join("rules"), "사용자 지정");
+        scan_scripts(&mut agent, &root.join("tools"), "tool", "사용자 지정");
+        scan_scripts(&mut agent, &root.join("plugins"), "plugin", "사용자 지정");
         agents.push(agent);
     }
     Ok(Snapshot {
@@ -224,6 +372,27 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
         project_path: project.map(|p| display(&p)),
         agents,
     })
+}
+
+fn scan_extra(agent: &mut Agent, root: &Path, scope: &str) {
+    let files: &[&str] = match agent.id.as_str() {
+        "gemini" => &["settings.json"],
+        "cursor" => &["mcp.json", "hooks.json"],
+        "copilot" => &["settings.json", "settings.local.json", "mcp-config.json"],
+        "windsurf" => &["mcp_config.json"],
+        _ => &[],
+    };
+    for file in files {
+        scan_config(agent, &root.join(file), scope);
+    }
+    scan_skills(agent, &root.join("skills"), scope);
+    scan_rules(agent, &root.join("rules"), scope);
+    let rule = match agent.id.as_str() {
+        "gemini" => "GEMINI.md",
+        "copilot" => "copilot-instructions.md",
+        _ => "AGENTS.md",
+    };
+    add_file(agent, &root.join(rule), "rule", scope);
 }
 
 fn display(path: &Path) -> String {
@@ -610,7 +779,12 @@ fn find_executable(id: &str, home: &Path) -> Option<String> {
         "codex" => &["codex"],
         "claude" => &["claude"],
         "opencode" => &["opencode"],
-        _ => &["agy", "antigravity"],
+        "antigravity" => &["agy", "antigravity"],
+        "gemini" => &["gemini"],
+        "cursor" => &["cursor", "cursor-agent"],
+        "copilot" => &["copilot"],
+        "windsurf" => &["windsurf", "devin"],
+        _ => return None,
     };
     let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
@@ -624,6 +798,10 @@ fn find_executable(id: &str, home: &Path) -> Option<String> {
     if cfg!(target_os = "windows") {
         paths.push(home.join("AppData/Roaming/npm"));
         paths.push(home.join("AppData/Local/agy/bin"));
+        for app in ["Cursor", "Windsurf", "Antigravity", "Devin"] {
+            paths.push(home.join(format!("AppData/Local/Programs/{app}/resources/app/bin")));
+        }
+
         let root = home.join("AppData/Local/OpenAI/Codex/bin");
         if let Ok(entries) = fs::read_dir(root) {
             let mut versions = entries.filter_map(Result::ok).collect::<Vec<_>>();
@@ -636,6 +814,19 @@ fn find_executable(id: &str, home: &Path) -> Option<String> {
             PathBuf::from("/opt/homebrew/bin"),
             PathBuf::from("/usr/bin"),
         ]);
+    }
+    if cfg!(target_os = "macos") {
+        for app in ["Cursor", "Windsurf", "Antigravity", "Devin"] {
+            paths.push(PathBuf::from(format!(
+                "/Applications/{app}.app/Contents/Resources/app/bin"
+            )));
+            paths.push(home.join(format!("Applications/{app}.app/Contents/Resources/app/bin")));
+        }
+    }
+    if cfg!(target_os = "linux") {
+        for app in ["cursor", "windsurf", "antigravity", "devin"] {
+            paths.push(PathBuf::from(format!("/usr/share/{app}/bin")));
+        }
     }
     for name in names {
         for root in &paths {

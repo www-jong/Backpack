@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Monitor, Moon, Sun, X } from "lucide-react";
 import type { Preferences, ThemePreference } from "./preferences";
-import type { Snapshot } from "./types";
+import AgentRegistration from "./AgentRegistration";
+import type { CustomAgent, Snapshot } from "./types";
 
-export type SettingsTab = "general" | "paths";
+export type SettingsTab = "general" | "paths" | "agents";
 interface Props {
   initialTab: SettingsTab; preferences: Preferences; saveError: boolean;
   onPreferences: (value: Preferences) => void; onClose: () => void;
   project: string; onProject: (value: string) => void;
   roots: Record<string, string>; onRoots: (value: Record<string, string>) => void;
+  customAgents: CustomAgent[]; onCustomAgents: (agents:CustomAgent[]) => Promise<boolean>;
   snapshot: Snapshot | null; canScan: boolean; onScan: () => void;
 }
 const themes: { id: ThemePreference; label: string; icon: typeof Monitor }[] = [
@@ -16,7 +18,7 @@ const themes: { id: ThemePreference; label: string; icon: typeof Monitor }[] = [
   { id: "light", label: "라이트", icon: Sun },
   { id: "dark", label: "다크", icon: Moon },
 ];
-const agents = { codex: "Codex", claude: "Claude Code", antigravity: "Antigravity", opencode: "OpenCode" };
+
 export default function Settings(props: Props) {
   const [tab, setTab] = useState(props.initialTab);
   const dialog = useRef<HTMLElement>(null);
@@ -40,8 +42,9 @@ export default function Settings(props: Props) {
       <div className="settings-tabs" role="tablist" aria-label="설정 종류">
         <button id="general-tab" role="tab" aria-selected={tab === "general"} aria-controls="general-settings" onClick={() => setTab("general")}>일반</button>
         <button id="paths-tab" role="tab" aria-selected={tab === "paths"} aria-controls="path-settings" onClick={() => setTab("paths")}>탐지 경로</button>
+        <button id="agents-tab" role="tab" aria-selected={tab === "agents"} aria-controls="agent-settings" onClick={() => setTab("agents")}>기타 에이전트</button>
       </div>
-      {tab === "general" ? <div role="tabpanel" id="general-settings" aria-labelledby="general-tab">
+      {tab === "agents" ? <div role="tabpanel" id="agent-settings" aria-labelledby="agents-tab"><AgentRegistration agents={props.customAgents} canSave={props.canScan} onSave={props.onCustomAgents}/></div> : tab === "general" ? <div role="tabpanel" id="general-settings" aria-labelledby="general-tab">
         <div className="settings-section"><h3>화면 테마</h3><p>시스템을 선택하면 운영체제의 테마 변경을 자동으로 따릅니다.</p>
           <div className="theme-options" role="group" aria-label="화면 테마">{themes.map(({id, label, icon: Icon}) => <button key={id} className={props.preferences.theme === id ? "selected" : ""} aria-pressed={props.preferences.theme === id} onClick={() => props.onPreferences({ ...props.preferences, theme: id })}><Icon size={22}/>{label}</button>)}</div>
         </div>
@@ -55,7 +58,7 @@ export default function Settings(props: Props) {
         <p className="settings-description">프로젝트와 에이전트 설정 폴더의 절대 경로를 입력하세요. 경로는 이번 실행에만 적용됩니다.</p>
         <label className="field">프로젝트 폴더<input value={props.project} onChange={e => props.onProject(e.target.value)} placeholder="프로젝트 폴더의 절대 경로"/></label>
         <div className="field-divider">에이전트 설정 루트 <span>비워두면 기본값 사용</span></div>
-        {Object.entries(agents).map(([id, name]) => <label className="field" key={id}>{name}<input value={props.roots[id] ?? ""} onChange={e => props.onRoots({ ...props.roots, [id]: e.target.value })} placeholder={props.snapshot?.agents.find(a => a.id === id)?.configRoots[0] ?? "기본 설정 경로"}/></label>)}
+        {(props.snapshot?.agents.filter(a=>!a.custom) ?? []).map(({id, name}) => <label className="field" key={id}>{name}<input value={props.roots[id] ?? ""} onChange={e => props.onRoots({ ...props.roots, [id]: e.target.value })} placeholder={props.snapshot?.agents.find(a => a.id === id)?.configRoots[0] ?? "기본 설정 경로"}/></label>)}
         <div className="modal-actions"><button className="secondary" onClick={props.onClose}>닫기</button><button className="primary" disabled={!props.canScan} onClick={props.onScan}>이 경로로 탐지</button></div>
       </div>}
     </section>

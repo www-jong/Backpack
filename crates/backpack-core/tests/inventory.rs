@@ -24,6 +24,7 @@ fn request(home: &Path) -> ScanRequest {
     ScanRequest {
         roots,
         project_path: None,
+        custom_agents: vec![],
     }
 }
 
@@ -31,7 +32,7 @@ fn request(home: &Path) -> ScanRequest {
 fn empty_configuration_is_not_a_scan_failure() {
     let home = TempDir::new().unwrap();
     let snapshot = scan_at(home.path(), request(home.path())).unwrap();
-    assert_eq!(snapshot.agents.len(), 4);
+    assert_eq!(snapshot.agents.len(), 8);
     assert!(snapshot
         .agents
         .iter()
@@ -371,4 +372,87 @@ enabled = false
             origin
         );
     }
+}
+
+#[test]
+fn discovers_additional_agents_and_separates_shared_gemini_directory() {
+    let home = TempDir::new().unwrap();
+    write(
+        home.path(),
+        ".gemini/settings.json",
+        r#"{"mcpServers":{"gemini-tool":{"command":"unused","env":{"TOKEN":"SECRET"}}}}"#,
+    );
+    write(
+        home.path(),
+        ".cursor/mcp.json",
+        r#"{"mcpServers":{"cursor-tool":{"url":"https://SECRET.example"}}}"#,
+    );
+    write(home.path(), ".copilot/settings.json", "{}");
+    write(home.path(), ".codeium/windsurf/mcp_config.json", "{}");
+    let snapshot = scan_at(home.path(), request(home.path())).unwrap();
+    let by_id = |id: &str| snapshot.agents.iter().find(|a| a.id == id).unwrap();
+    assert!(by_id("gemini")
+        .resources
+        .iter()
+        .any(|r| r.name == "gemini-tool"));
+    assert!(!by_id("antigravity")
+        .resources
+        .iter()
+        .any(|r| r.name == "gemini-tool"));
+    assert!(by_id("cursor")
+        .resources
+        .iter()
+        .any(|r| r.name == "cursor-tool"));
+    assert!(!by_id("copilot").resources.is_empty());
+    assert!(!by_id("windsurf").resources.is_empty());
+    assert_eq!(by_id("codex").inspection, "app-server");
+    assert_eq!(by_id("cursor").inspection, "file");
+    assert!(!serde_json::to_string(&snapshot).unwrap().contains("SECRET"));
+}
+#[test]
+fn custom_agents_are_bounded_read_only_and_preserve_missing_registrations() {
+    use backpack_core::CustomAgent;
+    let home = TempDir::new().unwrap();
+    write(
+        home.path(),
+        "custom/options.json",
+        r#"{"mcpServers":{"my-tool":{"command":"do-not-run"}}}"#,
+    );
+    write(home.path(), "custom/skills/custom-skill/SKILL.md", "custom");
+    write(home.path(), "custom/tool.exe", "not an executable");
+    let custom = CustomAgent {
+        id: "custom-example".into(),
+        name: "Other AI".into(),
+        config_root: home.path().join("custom").to_string_lossy().into_owned(),
+        executable: Some(
+            home.path()
+                .join("custom/tool.exe")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        config_files: vec!["options.json".into()],
+    };
+    let mut req = request(home.path());
+    req.custom_agents.push(custom.clone());
+    let result = scan_at(home.path(), req.clone()).unwrap();
+    let agent = result.agents.last().unwrap();
+    assert!(agent.custom);
+    assert!(agent.executable.is_some());
+    assert!(agent.resources.iter().any(|r| r.name == "my-tool"));
+    assert!(agent.resources.iter().any(|r| r.name == "custom-skill"));
+    req.custom_agents[0].config_root = home.path().join("missing").to_string_lossy().into_owned();
+    assert!(!scan_at(home.path(), req.clone())
+        .unwrap()
+        .agents
+        .last()
+        .unwrap()
+        .warnings
+        .is_empty());
+    req.custom_agents.push(custom);
+    assert!(scan_at(home.path(), req.clone()).is_err());
+    req.custom_agents.pop();
+    req.custom_agents[0].config_files = vec!["../auth.json".into()];
+    assert!(scan_at(home.path(), req.clone()).is_err());
+    req.custom_agents[0].id = "codex".into();
+    assert!(scan_at(home.path(), req).is_err());
 }
