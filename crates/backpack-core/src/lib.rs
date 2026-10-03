@@ -1,3 +1,4 @@
+pub mod changes;
 pub mod cli;
 pub mod codex;
 use serde::{Deserialize, Serialize};

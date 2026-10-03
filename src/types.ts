@@ -11,3 +11,9 @@ export interface CodexInspection { observedAt: number; version: string | null; e
 export interface CustomAgent { id: string; name: string; executable?: string; configRoot: string; configFiles: string[] }
 
 export interface CliInspection { agentId:string; observedAt:number; version:string|null; executable:string; cwd:string; configRoot:string; query:QueryState; servers:{name:string;status:string;origin:"user"|"bundled"|"unknown"}[] }
+
+export interface McpDraft { agentId:string; path:string; name:string; action:"register"|"enable"|"disable"; command:string; args:string[]; url:string; envNames:string[]; tokenEnv:string; enabled:boolean }
+export interface ChangePreview {path:string;name:string;action:string;before:string;after:string;transport:string;envNames:string[];createsFile:boolean}
+export interface BackupReceipt {id:string;path:string;name:string;action:string;createdAt:number;restorable:boolean;existed:boolean}
+export interface EditorData {targets:string[];backups:BackupReceipt[]}
+export interface PreviewResult {token:string;change:ChangePreview}

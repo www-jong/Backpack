@@ -88,12 +88,16 @@ version = "0.1.0"
 dependencies = [
  "dirs 6.0.0",
  "json5",
+ "jsonc-parser",
  "libc",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "toml 0.8.23",
+ "toml_edit 0.22.27",
+ "url",
  "windows-sys 0.61.2",
 ]
 
@@ -102,6 +106,8 @@ name = "backpack-desktop"
 version = "0.1.0"
 dependencies = [
  "backpack-core",
+ "dirs 6.0.0",
+ "serde",
  "tauri",
  "tauri-build",
 ]
@@ -1680,6 +1686,12 @@ dependencies = [
  "pest_derive",
  "serde",
 ]
+
+[[package]]
+name = "jsonc-parser"
+version = "0.32.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "840785e1a8b4fdb27be18440a35a81af64820dc185c3973ff8b012d4c6282512"
 
 [[package]]
 name = "jsonptr"
