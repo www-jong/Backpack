@@ -21,7 +21,7 @@
   --shadow: #0000001f;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --background: #111113;
     --surface: #19191d;
     --surface-muted: #25252b;
@@ -67,3 +67,38 @@ button:focus-visible,a:focus-visible,input:focus-visible { outline:2px solid var
 .search:focus-within { border-color:var(--focus); box-shadow:0 0 0 1px var(--focus) }
 
 .bundled-toggle{display:flex;align-items:center;gap:8px;padding:0 23px 18px;color:var(--text-secondary);font-size:11px;flex-wrap:wrap}.bundled-toggle input{accent-color:var(--accent);width:14px;height:14px;margin:0}.bundled-toggle small{color:var(--text-muted);font-size:10px}
+
+:root[data-theme="dark"] {
+    --background: #111113;
+    --surface: #19191d;
+    --surface-muted: #25252b;
+    --border: #35353e;
+    --text: #f2f2f5;
+    --text-secondary: #b8b8c2;
+    --text-muted: #9898a5;
+    --inverse: #19191d;
+    --accent: #e4e4eb;
+    --accent-hover: #ffffff;
+    --selected-bg: #303039;
+    --selected-border: #707080;
+    --focus: #a5a7ff;
+    --error-bg: #321e1e;
+    --error-border: #86524c;
+    --error-text: #f0b3ab;
+    --warning-border: #75613c;
+    --warning-text: #e3c78b;
+    --overlay: #00000080;
+    --shadow: #00000066;
+}
+.settings-tabs{display:flex;gap:6px;border-bottom:1px solid var(--border);margin:0 0 24px;padding-bottom:12px}
+.settings-tabs button{background:transparent;color:var(--text-muted);border:0;border-radius:7px;padding:9px 15px;font-size:12px}
+.settings-tabs button[aria-selected="true"]{background:var(--selected-bg);color:var(--text)}
+.settings-section{margin-bottom:25px}.settings-section h3{font-size:13px;margin:0 0 9px;font-weight:600}
+.settings-section p,.settings-description{color:var(--text-muted);font-size:11px;line-height:1.8;margin:0 0 16px}
+.theme-options{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.theme-options button{display:flex;flex-direction:column;align-items:center;gap:11px;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:9px;color:var(--text-secondary);font-size:12px}
+.theme-options button.selected{background:var(--selected-bg);border-color:var(--selected-border);color:var(--text)}
+.setting-option{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 0;border-bottom:1px solid var(--border)}
+.setting-option strong{font-size:12px;font-weight:500}.setting-option small{display:block;color:var(--text-muted);font-size:11px;line-height:1.8;margin-top:5px}
+.setting-option input{accent-color:var(--accent);width:17px;height:17px;flex-shrink:0}
+.settings-saved{font-size:11px;line-height:1.8;color:var(--text-muted)}.settings-save-error{font-size:11px;line-height:1.8;color:var(--error-text)}
