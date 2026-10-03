@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Backpack, Boxes, Cable, ChevronRight, CircleHelp, Code2, FileText, FolderOpen, Layers, LoaderCircle, RefreshCw, Search, Settings2, ShieldCheck, Terminal, Workflow, X } from "lucide-react";
 import { readCustomAgents, saveCustomAgents } from "./agentPreferences";
-import type { CustomAgent, CodexInspection, Resource, ResourceKind, ScanRequest, Snapshot } from "./types";
+import type { CliInspection, CustomAgent, CodexInspection, Resource, ResourceKind, ScanRequest, Snapshot } from "./types";
+import CliPanel from "./CliPanel";
 import CodexPanel from "./CodexPanel";
 import Settings, { type SettingsTab } from "./Settings";
 import { applyTheme, readPreferences, savePreferences } from "./preferences";
@@ -13,7 +14,7 @@ const kinds: Record<ResourceKind, { label: string; icon: typeof Boxes }> = {
   mcp: { label: "MCP", icon: Cable }, plugin: { label: "플러그인", icon: Layers },
   setting: { label: "설정", icon: Settings2 },
 };
-const statusLabel: Record<string, string> = { present: "파일 발견", configured: "설정 등록", enabled: "활성 설정", disabled: "비활성 설정" };
+const statusLabel: Record<string, string> = { present: "파일 발견", configured: "설정 등록", enabled: "활성 설정", disabled: "비활성 설정", connected:"연결됨", failed:"연결 실패", authenticationRequired:"인증 필요", pendingApproval:"승인 대기", clientRegistrationRequired:"클라이언트 등록 필요", notStarted:"미시작", notConfigured:"설정 미완료" };
 
 export default function App() {
   const [customAgents, setCustomAgents] = useState(readCustomAgents);
@@ -23,6 +24,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [inspection, setInspection] = useState<CodexInspection | null>(null);
   const [inspectionError, setInspectionError] = useState("");
+  const [cliReports,setCliReports] = useState<Record<string,CliInspection>>({});
+  const [cliErrors,setCliErrors] = useState<Record<string,string>>({});
   const [inspectionId, setInspectionId] = useState<string | null>(null);
   const inspectionBusy = inspectionId !== null;
   const [agentId, setAgentId] = useState("all");
@@ -41,7 +44,7 @@ export default function App() {
 
   async function refresh(next: ScanRequest = request) {
     if (!native) return;
-    setBusy(true); setError(""); setSelected(null); setInspection(null); setInspectionError("");
+    setBusy(true); setError(""); setSelected(null); setInspection(null); setInspectionError(""); setCliReports({}); setCliErrors({});
     try {
       setSnapshot(await invoke<Snapshot>("scan_inventory", { request: next }));
       setRequest(next);
@@ -66,9 +69,16 @@ export default function App() {
     catch (e) { setInspectionError(typeof e === "string" ? e : "Codex 조회를 완료하지 못했습니다."); }
     finally { setInspectionId(null); }
   }
+  async function inspectCli(id:string) {
+    if (!native || busy || inspectionBusy) return;
+    const requestId=crypto.randomUUID(); setInspectionId(requestId); setCliErrors(previous=>({...previous,[id]:""}));
+    try { const result=await invoke<CliInspection>("inspect_cli_inventory",{request,agentId:id,requestId}); setCliReports(previous=>({...previous,[id]:result})); }
+    catch(e) { setCliErrors(previous=>({...previous,[id]:typeof e==="string"?e:"조회하지 못했습니다."})); }
+    finally {setInspectionId(null);}
+  }
   async function cancelInspection() {
     if (!inspectionId) return;
-    try { await invoke("cancel_codex_inspection", { requestId: inspectionId }); }
+    try { await invoke("cancel_inspection", { requestId: inspectionId }); }
     catch { setInspectionError("취소 요청을 보내지 못했습니다. 조회는 제한 시간 후 종료됩니다."); }
   }
   useEffect(() => { if (preferences.scanOnStartup) void refresh(); }, []);
@@ -80,7 +90,14 @@ export default function App() {
   const currentAgent = snapshot?.agents.find(a=>a.id===agentId);
   const all = useMemo(() => {
     const files = snapshot?.agents.flatMap(a => a.resources) ?? [];
-    if (!inspection || !["success", "partial"].includes(inspection.skillsQuery.status)) return files;
+    const mergeCli = (resources:Resource[]) => resources.map(resource=>{
+      const report=cliReports[resource.agentId];
+      if (resource.kind!=="mcp" || !report || !["success","partial"].includes(report.query.status)) return resource;
+      const server=report.servers.find(s=>s.name===resource.name);
+      if (!server) return {...resource,details:[...resource.details,{label:"직접 조회",value:"CLI 목록에서 확인하지 못함 · 비활성으로 판단하지 않음"}]};
+      return {...resource,status:server.status,source:"파일 탐지 + CLI mcp list",details:[...resource.details,{label:"파일 기준 상태",value:statusLabel[resource.status]??resource.status},{label:"직접 조회 문맥",value:report.cwd},{label:"직접 조회 시간",value:new Date(report.observedAt*1000).toLocaleString("ko-KR")}]};
+    });
+    if (!inspection || !["success", "partial"].includes(inspection.skillsQuery.status)) return mergeCli(files);
     const pathKey = (path: string) => snapshot?.platform === "windows" ? path.toLowerCase() : path;
     const reported = new Map(inspection.skills.map(r => [pathKey(r.path), r]));
     const merged = files.map(resource => {
@@ -90,8 +107,8 @@ export default function App() {
       reported.delete(pathKey(resource.path));
       return { ...direct, details: [...resource.details, { label: "파일 탐지 근거", value: resource.source }, ...direct.details] };
     });
-    return [...merged, ...reported.values()];
-  }, [snapshot, inspection]);
+    return mergeCli([...merged, ...reported.values()]);
+  }, [snapshot, inspection, cliReports]);
   const managed = useMemo(() => all.filter(r => showBundled || r.origin !== "bundled"), [all, showBundled]);
   const bundledCount = all.filter(r => r.origin === "bundled").length;
   const visible = useMemo(() => managed.filter(r => (agentId === "all" || r.agentId === agentId)
@@ -123,6 +140,7 @@ export default function App() {
         <section className="page-heading"><div><div className="eyebrow"><span/>LOCAL INVENTORY</div><h1>내 에이전트 환경</h1><p>이 PC에 있는 에이전트와 스킬, 도구, 연결 설정을 한눈에 확인하세요.</p></div><button className="primary" disabled={busy || inspectionBusy || !native} onClick={() => void refresh()}>{busy ? <LoaderCircle className="spin" size={17}/> : <RefreshCw size={17}/>} {busy ? "탐지 중" : "다시 탐지"}</button></section>
         {!native && <div className="notice"><CircleHelp size={18}/><div><strong>브라우저 미리보기</strong><p>실제 PC 탐지는 데스크톱 앱에서 사용할 수 있습니다. 예시 설치 상태를 표시하지 않습니다.</p></div></div>}
         {error && <div className="notice error" role="alert"><CircleHelp size={18}/><div><strong>탐지를 완료하지 못했습니다</strong><p>{error}</p><button className="text-button" onClick={() => openSettings("paths")}>경로 설정 확인</button></div></div>}
+        {inspectionBusy && <div className="notice" role="status"><LoaderCircle size={18} className="spin"/><div><strong>직접 조회 중</strong><p>45초 안에 완료하거나 종료합니다.</p><button className="text-button" onClick={()=>void cancelInspection()}>조회 취소</button></div></div>}
         <div className="stats">
           <Stat label="발견한 에이전트" value={snapshot ? foundAgents : "—"} suffix={snapshot ? `/ ${snapshot.agents.length} 지원·등록` : "개"} icon={Code2}/>
           <Stat label="표시 대상 리소스" value={snapshot ? managed.length : "—"} suffix="개" icon={Boxes}/>
@@ -133,16 +151,16 @@ export default function App() {
         <label className="bundled-toggle"><input type="checkbox" checked={showUndetected} onChange={e=>setShowUndetected(e.target.checked)}/><span>설치 미확인 에이전트도 표시</span></label>
         <div className="agent-grid">{displayedAgents.map(a => {
           const id = a.id; const found = !!a.executable;
-          return <button key={id} className={"agent-card " + (agentId === id ? "selected" : "")} onClick={() => { setAgentId(agentId === id ? "all" : id); setSelected(null); }}>
+          return <button key={id} disabled={inspectionBusy} className={"agent-card " + (agentId === id ? "selected" : "")} onClick={() => { setAgentId(agentId === id ? "all" : id); setSelected(null); }}>
             <div className="agent-top"><span className={"agent-logo " + id}>{a.name.slice(0,2)}</span><span className={"agent-state " + (found ? "found" : "")}>{found ? "실행 파일 발견" : a.resources.length ? "설정만 발견" : "설치 미확인"}</span></div>
-            <strong>{a.name}</strong><div className="agent-summary"><span>{managed.filter(r => r.agentId === id).length}개 리소스 · {a.custom ? "사용자 등록" : a.inspection === "app-server" ? "직접 조회 지원" : "파일 탐지"}</span><ChevronRight size={16}/></div>
+            <strong>{a.name}</strong><div className="agent-summary"><span>{managed.filter(r => r.agentId === id).length}개 리소스 · {a.custom ? "사용자 등록" : a.inspection !== "file" ? "직접 조회 지원" : "파일 탐지"}</span><ChevronRight size={16}/></div>
           </button>;
         })}</div>
         {!displayedAgents.length && <p className="inspection-hint">아직 발견한 에이전트가 없습니다. 다시 탐지하거나 기타 AI를 등록하세요.</p>}
         {currentAgent ? <section className="agent-section" aria-label={`${currentAgent.name} 설정`}>
           <div className="inspection-heading"><div><h2>{currentAgent.name} 설정</h2><p>스킬·룰·Tools·Hooks·MCP·플러그인은 아래 목록에서 종류별로 확인하세요.</p></div><button className="secondary" disabled={busy || inspectionBusy || !native} onClick={()=>void refresh()}>파일 설정 다시 확인</button></div>
           <dl className="detail-list"><div><dt>실행 파일</dt><dd>{currentAgent.executable ?? "발견하지 못함"}</dd></div><div><dt>설정 경로</dt><dd>{currentAgent.configRoots.join(" · ")}</dd></div><div><dt>파일 확인 시간</dt><dd>{snapshot && new Date(snapshot.scannedAt*1000).toLocaleString("ko-KR")}</dd></div></dl>
-          {currentAgent.inspection === "app-server" ? <CodexPanel result={inspection} snapshot={snapshot} busy={inspectionBusy} disabled={!native || busy || !snapshot} error={inspectionError} showBundled={showBundled} onInspect={includeMcp => void inspect(includeMcp)} onCancel={() => void cancelInspection()}/> : <p className="inspection-hint">직접 조회 어댑터는 아직 지원하지 않습니다. 현재는 설정 파일에서 확인한 결과를 표시하며, 실제 실행·연결 상태는 미확인입니다.</p>}
+          {currentAgent.inspection === "app-server" ? <CodexPanel result={inspection} snapshot={snapshot} busy={inspectionBusy} disabled={!native || busy || !snapshot} error={inspectionError} showBundled={showBundled} onInspect={includeMcp => void inspect(includeMcp)} onCancel={() => void cancelInspection()}/> : currentAgent.inspection === "mcp-cli" ? <CliPanel key={currentAgent.id} agent={currentAgent} result={cliReports[currentAgent.id]??null} error={cliErrors[currentAgent.id]??""} busy={inspectionBusy} disabled={!native||busy||!currentAgent.executable} showBundled={showBundled} onInspect={()=>void inspectCli(currentAgent.id)} onCancel={()=>void cancelInspection()}/> : <p className="inspection-hint">직접 조회 어댑터는 아직 지원하지 않습니다. 현재는 설정 파일에서 확인한 결과를 표시하며, 실제 실행·연결 상태는 미확인입니다.</p>}
           <button className="text-button" onClick={()=>openSettings(currentAgent.custom ? "agents" : "paths")}>{currentAgent.custom ? "등록 설정 변경" : "탐지 경로 변경"}</button>
         </section> : <p className="inspection-hint agent-selection-hint">에이전트를 선택하면 해당 AI의 설정 경로와 조회 기능이 열립니다.</p>}
         <section className="inventory">
@@ -161,7 +179,7 @@ export default function App() {
         <div className="bottom-note"><span className="device-dot"/><span>{inspection ? "파일 탐지와 Codex 직접 조회 결과" : "실제 파일에서 확인한 목록"}</span><span className="separator">·</span><span>인증 값과 설정 원문은 표시하지 않습니다.</span></div>
       </div>
     </main>
-    {selected && <div className="overlay" onClick={() => setSelected(null)}><aside className="detail-panel" aria-label="리소스 상세" onClick={e => e.stopPropagation()}><div className="panel-top"><span>리소스 상세</span><button aria-label="상세 닫기" onClick={() => setSelected(null)}><X size={20}/></button></div><span className="detail-icon">{(() => { const Icon = kinds[selected.kind].icon; return <Icon size={28}/>; })()}</span><h2>{selected.name}</h2><p className="detail-sub">{labels[selected.agentId]} · {kinds[selected.kind].label}</p><dl className="detail-list">{[{ label: "발견 위치", value: selected.path }, { label: "제공 구분", value: selected.origin === "bundled" ? "기본 제공" : selected.origin === "user" ? "사용자 구성" : "미확인" }, { label: "적용 범위", value: selected.scope }, { label: "설정 상태", value: statusLabel[selected.status] ?? selected.status }, { label: "근거", value: selected.source }, ...selected.details].map((d,i) => <div key={i}><dt>{d.label}</dt><dd>{d.value}</dd></div>)}</dl><div className="notice compact"><ShieldCheck size={18}/><p>파일 탐지 또는 별도 조회 프로세스의 결과입니다. 현재 대화에서의 로드·실행 여부와 다를 수 있습니다.</p></div></aside></div>}
+    {selected && <div className="overlay" onClick={() => setSelected(null)}><aside className="detail-panel" aria-label="리소스 상세" onClick={e => e.stopPropagation()}><div className="panel-top"><span>리소스 상세</span><button aria-label="상세 닫기" onClick={() => setSelected(null)}><X size={20}/></button></div><span className="detail-icon">{(() => { const Icon = kinds[selected.kind].icon; return <Icon size={28}/>; })()}</span><h2>{selected.name}</h2><p className="detail-sub">{labels[selected.agentId]} · {kinds[selected.kind].label}</p><dl className="detail-list">{[{ label: "발견 위치", value: selected.path }, { label: "제공 구분", value: selected.origin === "bundled" ? "기본 제공" : selected.origin === "user" ? "사용자 구성" : "미확인" }, { label: "적용 범위", value: selected.scope }, { label: "확인 상태", value: statusLabel[selected.status] ?? selected.status }, { label: "근거", value: selected.source }, ...selected.details].map((d,i) => <div key={i}><dt>{d.label}</dt><dd>{d.value}</dd></div>)}</dl><div className="notice compact"><ShieldCheck size={18}/><p>파일 탐지 또는 별도 조회 프로세스의 결과입니다. 현재 대화에서의 로드·실행 여부와 다를 수 있습니다.</p></div></aside></div>}
     {settings && <Settings customAgents={customAgents} onCustomAgents={registerAgents} initialTab={settingsTab} preferences={preferences} saveError={saveError} onPreferences={setPreferences} onClose={() => setSettings(false)} project={project} onProject={setProject} roots={roots} onRoots={setRoots} snapshot={snapshot} canScan={native && !busy && !inspectionBusy} onScan={configure}/> }
   </div>;
 }

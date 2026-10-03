@@ -1,3 +1,4 @@
+use backpack_core::cli::{inspect_cli, CliInspection};
 use backpack_core::codex::{inspect_codex, CodexInspection};
 use backpack_core::{scan, ScanRequest, Snapshot};
 use std::sync::{
@@ -29,7 +30,7 @@ async fn inspect_codex_inventory(
     {
         let mut active = state.0.lock().map_err(|_| "조회 상태를 읽지 못했습니다.")?;
         if active.is_some() {
-            return Err("Codex 조회가 이미 진행 중입니다.".into());
+            return Err("다른 조회가 이미 진행 중입니다.".into());
         }
         *active = Some((request_id.clone(), cancel.clone()));
     }
@@ -43,7 +44,34 @@ async fn inspect_codex_inventory(
 }
 
 #[tauri::command]
-fn cancel_codex_inspection(
+async fn inspect_cli_inventory(
+    request: ScanRequest,
+    agent_id: String,
+    request_id: String,
+    state: tauri::State<'_, InspectionState>,
+) -> Result<CliInspection, String> {
+    if request_id.is_empty() || request_id.len() > 64 {
+        return Err("조회 요청 ID가 올바르지 않습니다.".into());
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut active = state.0.lock().map_err(|_| "조회 상태를 읽지 못했습니다.")?;
+        if active.is_some() {
+            return Err("다른 조회가 이미 진행 중입니다.".into());
+        }
+        *active = Some((request_id.clone(), cancel.clone()));
+    }
+    let result = inspect_cli(request, agent_id, cancel).await;
+    if let Ok(mut active) = state.0.lock() {
+        if active.as_ref().is_some_and(|(id, _)| id == &request_id) {
+            *active = None;
+        }
+    }
+    result
+}
+
+#[tauri::command]
+fn cancel_inspection(
     request_id: String,
     state: tauri::State<'_, InspectionState>,
 ) -> Result<bool, String> {
@@ -61,7 +89,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_inventory,
             inspect_codex_inventory,
-            cancel_codex_inspection
+            inspect_cli_inventory,
+            cancel_inspection
         ])
         .run(tauri::generate_context!())
         .expect("Backpack 실행 실패");

@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod codex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -190,7 +191,12 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
             resources: vec![],
             warnings: vec![],
             custom: false,
-            inspection: if id == "codex" { "app-server" } else { "file" }.into(),
+            inspection: match id {
+                "codex" => "app-server",
+                "claude" | "opencode" | "gemini" => "mcp-cli",
+                _ => "file",
+            }
+            .into(),
             builtin_runtime_root: cfg!(target_os = "windows")
                 .then(|| home.join("AppData/Local/OpenAI/Codex/runtimes")),
         };

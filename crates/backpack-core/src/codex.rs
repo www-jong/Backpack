@@ -240,7 +240,7 @@ impl Session {
         self.ownership.terminate();
     }
 }
-async fn cancelled(cancel: Arc<AtomicBool>) {
+pub(crate) async fn cancelled(cancel: Arc<AtomicBool>) {
     loop {
         if cancel.load(Ordering::Relaxed) {
             return;
@@ -250,12 +250,12 @@ async fn cancelled(cancel: Arc<AtomicBool>) {
 }
 
 #[cfg(windows)]
-struct ProcessOwnership(windows_sys::Win32::Foundation::HANDLE);
+pub(crate) struct ProcessOwnership(windows_sys::Win32::Foundation::HANDLE);
 #[cfg(windows)]
 unsafe impl Send for ProcessOwnership {}
 #[cfg(windows)]
 impl ProcessOwnership {
-    fn attach(child: &Child) -> Result<Self, String> {
+    pub(crate) fn attach(child: &Child) -> Result<Self, String> {
         use windows_sys::Win32::{Foundation::CloseHandle, System::JobObjects::*};
         // The job owns only this inspection process and its descendants.
         unsafe {
@@ -281,7 +281,7 @@ impl ProcessOwnership {
             Ok(Self(handle))
         }
     }
-    fn terminate(&mut self) {
+    pub(crate) fn terminate(&mut self) {
         if !self.0.is_null() {
             unsafe {
                 windows_sys::Win32::Foundation::CloseHandle(self.0);
@@ -291,15 +291,15 @@ impl ProcessOwnership {
     }
 }
 #[cfg(unix)]
-struct ProcessOwnership(Option<i32>);
+pub(crate) struct ProcessOwnership(Option<i32>);
 #[cfg(unix)]
 impl ProcessOwnership {
-    fn attach(child: &Child) -> Result<Self, String> {
+    pub(crate) fn attach(child: &Child) -> Result<Self, String> {
         Ok(Self(Some(
             child.id().ok_or("조회 프로세스 ID를 얻지 못했습니다.")? as i32,
         )))
     }
-    fn terminate(&mut self) {
+    pub(crate) fn terminate(&mut self) {
         if let Some(group) = self.0.take() {
             unsafe {
                 libc::kill(-group, libc::SIGKILL);

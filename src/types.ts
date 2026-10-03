@@ -1,7 +1,7 @@
 export type ResourceKind = "skill" | "rule" | "tool" | "hook" | "mcp" | "plugin" | "setting";
 export interface Detail { label: string; value: string }
 export interface Resource { id: string; agentId: string; kind: ResourceKind; name: string; path: string; scope: string; status: string; source: string; origin: "user" | "bundled" | "unknown"; details: Detail[] }
-export interface Agent { id: string; name: string; executable: string | null; configRoots: string[]; resources: Resource[]; warnings: string[]; custom: boolean; inspection: "app-server" | "file" }
+export interface Agent { id: string; name: string; executable: string | null; configRoots: string[]; resources: Resource[]; warnings: string[]; custom: boolean; inspection: "app-server" | "mcp-cli" | "file" }
 export interface Snapshot { scannedAt: number; platform: string; home: string; projectPath: string | null; agents: Agent[] }
 export interface ScanRequest { projectPath?: string; roots?: Record<string, string>; customAgents?: CustomAgent[] }
 export interface QueryState { status: "success" | "partial" | "unsupported" | "error" | "skipped"; message: string }
@@ -9,3 +9,5 @@ export interface CodexMcpStatus { name: string; origin: "user" | "bundled" | "un
 export interface CodexInspection { observedAt: number; version: string | null; executable: string; codexHome: string; cwd: string; context: string; configQuery: QueryState; skillsQuery: QueryState; mcpQuery: QueryState; settings: Detail[]; skills: Resource[]; mcpServers: CodexMcpStatus[] }
 
 export interface CustomAgent { id: string; name: string; executable?: string; configRoot: string; configFiles: string[] }
+
+export interface CliInspection { agentId:string; observedAt:number; version:string|null; executable:string; cwd:string; configRoot:string; query:QueryState; servers:{name:string;status:string;origin:"user"|"bundled"|"unknown"}[] }

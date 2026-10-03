@@ -14,11 +14,13 @@ Backpack은 macOS·Windows·Linux에서 AI 코딩 에이전트의 스킬, 룰, �
 
 Codex 직접 조회는 설치된 실행 파일의 별도 App Server 프로세스에서 적용 설정과 활성화된 스킬을 가져오고 파일 탐지 결과와 비교합니다. 선택적으로 MCP 인증 방식·실행 상태·제공 tool 이름도 조회합니다. MCP 조회는 서버 실행이나 외부 접속을 유발할 수 있어 기본으로 꺼져 있습니다. tool이나 모델은 호출하지 않습니다. 현재 열려 있는 Codex 대화의 세션 상태와는 별개이며, API가 실행 상태를 반환하지 않으면 미확인으로 표시합니다. 조회 취소와 제한 시간, 일부 실패 처리를 지원합니다.
 
-다른 에이전트의 직접 조회, 개별 연결 검사, 라이브러리·프로필, 설정 적용·복원과 클라우드 동기화는 후속 구현 대상입니다. 모든 설치 형태나 중첩된 룰·플러그인 캐시를 완전히 탐지하는 단계는 아닙니다. 브라우저 미리보기에서는 실제 로컬 탐지를 수행하지 않습니다.
+추가 에이전트의 직접 조회, 개별 tool 실행 검사, 라이브러리·프로필, 설정 적용·복원과 클라우드 동기화는 후속 구현 대상입니다. 모든 설치 형태나 중첩된 룰·플러그인 캐시를 완전히 탐지하는 단계는 아닙니다. 브라우저 미리보기에서는 실제 로컬 탐지를 수행하지 않습니다.
 
 탐지 카탈로그는 Codex·Antigravity·OpenCode·Claude Code·Gemini CLI·Cursor·GitHub Copilot CLI·Windsurf / Devin을 포함합니다. 실행 파일 또는 설정 리소스가 발견된 AI를 동적으로 표시하고, 미확인 목록도 펼쳐볼 수 있습니다. 기타 AI는 앱 설정에서 이름·설정 폴더·선택적 실행 파일·설정 파일 이름을 등록할 수 있으며, 등록은 이 PC에 저장됩니다. 기타 AI는 JSON·JSONC·TOML 설정과 공통 skills/rules/tools/plugins 폴더를 파일 기준으로 탐지합니다. 모든 프로그램을 이름만 보고 AI로 추정하지는 않습니다.
 
-에이전트 카드를 선택하면 개별 설정 섹션과 필터가 열립니다. Codex 섹션은 App Server 직접 조회를 제공하고, 나머지는 파일 확인과 조회 지원 상태를 제공합니다. 에이전트 설정 쓰기·활성화 변경은 아직 구현하지 않았습니다. 구독이나 로그인 없이 설치·파일 탐지와 설정 비교를 검증할 수 있도록 설계합니다. 실제 모델 호출과 인증이 필요한 실행 검증은 별도로 구분합니다. 저장소는 로컬 폴더와 Google Drive 직접 연결을 우선 지원할 계획입니다. 첫 공개 버전에는 Backpack 전용 계정이나 운영 서버를 두지 않습니다.
+에이전트 카드를 선택하면 개별 설정 섹션과 필터가 열립니다. Codex 섹션은 App Server 직접 조회를 제공하며, Claude Code·OpenCode·Gemini CLI는 사용자가 선택해 `mcp list`로 MCP 연결 상태를 확인할 수 있습니다. 서버 실행·외부 접속 가능성을 표시하고, 서버 이름과 상태만 반환합니다. 파일 목록에 있는 MCP는 CLI 결과와 함께 표시하며, 목록에 없다고 비활성으로 판단하지 않습니다. 이 조회는 모델·개별 tool을 호출하지 않으며, 설정·스킬의 적용 상태나 tool 목록을 조회하는 명령은 아닙니다. 나머지는 파일 확인과 조회 지원 상태를 제공합니다.
+
+CLI 조회에도 취소·45초 제한·출력 크기 제한·조회 프로세스 종료 관리를 적용합니다. Windows npm 설치는 알려진 패키지의 실행 파일이나 Node.js 진입점을 확인해 실행하며, 셸 래퍼를 해석하지 않습니다. 확인할 수 없는 설치 형태는 미지원으로 표시합니다. Gemini CLI의 사용자 지정 설정 루트는 파일 탐지만 지원합니다. Windows의 OpenCode 설치에서 실제 조회를 검증했고, Claude Code·Gemini CLI는 테스트용 출력과 프로세스로 검증했습니다. 에이전트 설정 쓰기·활성화 변경은 아직 구현하지 않았습니다. 구독이나 로그인 없이 설치·파일 탐지와 설정 비교를 검증할 수 있도록 설계합니다. 실제 모델 호출과 인증이 필요한 실행 검증은 별도로 구분합니다. 저장소는 로컬 폴더와 Google Drive 직접 연결을 우선 지원할 계획입니다. 첫 공개 버전에는 Backpack 전용 계정이나 운영 서버를 두지 않습니다.
 
 ## 설계
 
@@ -59,6 +61,8 @@ Windows·macOS·Ubuntu용 CI 빌드·테스트를 구성했습니다. 실제 로
 ## 커스텀 tools
 
 직접 만든 tool 정의와 구현 파일, 함께 호출하는 스크립트, 의존성, OS별 실행 설정과 권한을 관리 대상에 포함합니다. 저장소에 없는 로컬 tools도 탐지하며, MCP 서버 연결과 그 서버가 제공하는 개별 tool은 구분합니다. 에이전트별 도구 형식이 다르므로 지원 여부를 표시하고, 다른 에이전트로 자동 변환할 수 있다고 가정하지 않습니다.
+
+직접 조회 명령: [Claude Code MCP](https://code.claude.com/docs/en/mcp), [OpenCode CLI](https://opencode.ai/docs/cli/), [Gemini CLI MCP](https://geminicli.com/docs/tools/mcp-server/).
 
 참고한 설정 규격: [Gemini CLI](https://geminicli.com/docs/reference/configuration/), [Cursor MCP](https://prod.cursor.com/help/customization/mcp), [Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference), [Devin Cascade MCP](https://docs.devin.ai/desktop/cascade/mcp). Windsurf의 기존 경로와 Devin의 현재 경로를 함께 확인합니다.
 
