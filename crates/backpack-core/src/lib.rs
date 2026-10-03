@@ -1,3 +1,4 @@
+pub mod codex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -10,7 +11,7 @@ use std::{
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_ENTRIES: usize = 2000;
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanRequest {
     pub project_path: Option<String>,
@@ -18,7 +19,7 @@ pub struct ScanRequest {
     pub roots: BTreeMap<String, String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub scanned_at: u64,
@@ -28,7 +29,7 @@ pub struct Snapshot {
     pub agents: Vec<Agent>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Agent {
     pub id: String,
@@ -41,7 +42,7 @@ pub struct Agent {
     builtin_runtime_root: Option<PathBuf>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Resource {
     pub id: String,
@@ -56,7 +57,7 @@ pub struct Resource {
     pub details: Vec<Detail>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Detail {
     pub label: String,
     pub value: String,

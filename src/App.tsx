@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Backpack, Boxes, Cable, ChevronRight, CircleHelp, Code2, FileText, FolderOpen, Layers, LoaderCircle, RefreshCw, Search, Settings2, ShieldCheck, Terminal, Workflow, X } from "lucide-react";
-import type { Resource, ResourceKind, ScanRequest, Snapshot } from "./types";
+import type { CodexInspection, Resource, ResourceKind, ScanRequest, Snapshot } from "./types";
+import CodexPanel from "./CodexPanel";
 import Settings, { type SettingsTab } from "./Settings";
 import { applyTheme, readPreferences, savePreferences } from "./preferences";
 
@@ -19,6 +20,10 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [inspection, setInspection] = useState<CodexInspection | null>(null);
+  const [inspectionError, setInspectionError] = useState("");
+  const [inspectionId, setInspectionId] = useState<string | null>(null);
+  const inspectionBusy = inspectionId !== null;
   const [agentId, setAgentId] = useState("all");
   const [kind, setKind] = useState("all");
   const [query, setQuery] = useState("");
@@ -35,18 +40,44 @@ export default function App() {
 
   async function refresh(next: ScanRequest = request) {
     if (!native) return;
-    setBusy(true); setError(""); setSelected(null);
+    setBusy(true); setError(""); setSelected(null); setInspection(null); setInspectionError("");
     try {
       setSnapshot(await invoke<Snapshot>("scan_inventory", { request: next }));
       setRequest(next);
     } catch (e) { setError(typeof e === "string" ? e : "탐지를 완료하지 못했습니다."); }
     finally { setBusy(false); }
   }
+  async function inspect(includeMcp: boolean) {
+    if (!native || busy || inspectionBusy) return;
+    const requestId = crypto.randomUUID();
+    setInspectionId(requestId); setInspectionError(""); setSelected(null);
+    try { setInspection(await invoke<CodexInspection>("inspect_codex_inventory", { request, includeMcp, requestId })); }
+    catch (e) { setInspectionError(typeof e === "string" ? e : "Codex 조회를 완료하지 못했습니다."); }
+    finally { setInspectionId(null); }
+  }
+  async function cancelInspection() {
+    if (!inspectionId) return;
+    try { await invoke("cancel_codex_inspection", { requestId: inspectionId }); }
+    catch { setInspectionError("취소 요청을 보내지 못했습니다. 조회는 제한 시간 후 종료됩니다."); }
+  }
   useEffect(() => { if (preferences.scanOnStartup) void refresh(); }, []);
   useEffect(() => { applyTheme(preferences.theme); setSaveError(!savePreferences(preferences)); }, [preferences]);
   function openSettings(tab: SettingsTab) { setSettingsTab(tab); setSettings(true); }
 
-  const all = useMemo(() => snapshot?.agents.flatMap(a => a.resources) ?? [], [snapshot]);
+  const all = useMemo(() => {
+    const files = snapshot?.agents.flatMap(a => a.resources) ?? [];
+    if (!inspection || !["success", "partial"].includes(inspection.skillsQuery.status)) return files;
+    const pathKey = (path: string) => snapshot?.platform === "windows" ? path.toLowerCase() : path;
+    const reported = new Map(inspection.skills.map(r => [pathKey(r.path), r]));
+    const merged = files.map(resource => {
+      if (resource.agentId !== "codex" || resource.kind !== "skill") return resource;
+      const direct = reported.get(pathKey(resource.path));
+      if (!direct) return { ...resource, details: [...resource.details, { label: "직접 조회", value: "파일에서만 발견 · 비활성으로 판단하지 않음" }] };
+      reported.delete(pathKey(resource.path));
+      return { ...direct, details: [...resource.details, { label: "파일 탐지 근거", value: resource.source }, ...direct.details] };
+    });
+    return [...merged, ...reported.values()];
+  }, [snapshot, inspection]);
   const managed = useMemo(() => all.filter(r => showBundled || r.origin !== "bundled"), [all, showBundled]);
   const bundledCount = all.filter(r => r.origin === "bundled").length;
   const visible = useMemo(() => managed.filter(r => (agentId === "all" || r.agentId === agentId)
@@ -75,7 +106,7 @@ export default function App() {
     <main className="main">
       <header className="topbar"><div className="breadcrumb">내 작업 공간<ChevronRight size={14}/><strong>에이전트 환경</strong></div><div className="read-only"><ShieldCheck size={15}/>읽기 전용 탐지</div></header>
       <div className="page">
-        <section className="page-heading"><div><div className="eyebrow"><span/>LOCAL INVENTORY</div><h1>내 에이전트 환경</h1><p>이 PC에 있는 에이전트와 스킬, 도구, 연결 설정을 한눈에 확인하세요.</p></div><button className="primary" disabled={busy || !native} onClick={() => void refresh()}>{busy ? <LoaderCircle className="spin" size={17}/> : <RefreshCw size={17}/>} {busy ? "탐지 중" : "다시 탐지"}</button></section>
+        <section className="page-heading"><div><div className="eyebrow"><span/>LOCAL INVENTORY</div><h1>내 에이전트 환경</h1><p>이 PC에 있는 에이전트와 스킬, 도구, 연결 설정을 한눈에 확인하세요.</p></div><button className="primary" disabled={busy || inspectionBusy || !native} onClick={() => void refresh()}>{busy ? <LoaderCircle className="spin" size={17}/> : <RefreshCw size={17}/>} {busy ? "탐지 중" : "다시 탐지"}</button></section>
         {!native && <div className="notice"><CircleHelp size={18}/><div><strong>브라우저 미리보기</strong><p>실제 PC 탐지는 데스크톱 앱에서 사용할 수 있습니다. 예시 설치 상태를 표시하지 않습니다.</p></div></div>}
         {error && <div className="notice error" role="alert"><CircleHelp size={18}/><div><strong>탐지를 완료하지 못했습니다</strong><p>{error}</p><button className="text-button" onClick={() => openSettings("paths")}>경로 설정 확인</button></div></div>}
         <div className="stats">
@@ -89,9 +120,10 @@ export default function App() {
           const a = snapshot?.agents.find(a => a.id === id); const found = !!a?.executable;
           return <button key={id} className={"agent-card " + (agentId === id ? "selected" : "")} onClick={() => { setAgentId(agentId === id ? "all" : id); setSelected(null); }}>
             <div className="agent-top"><span className={"agent-logo " + id}>{id === "claude" ? "✳" : id === "antigravity" ? "△" : id === "opencode" ? ">_" : "⌘"}</span><span className={"agent-state " + (found ? "found" : "")}>{!a ? "대기" : found ? "실행 파일 발견" : a.resources.length ? "설정만 발견" : "미발견"}</span></div>
-            <strong>{labels[id]}</strong><div className="agent-summary"><span>{a ? a.resources.filter(r => showBundled || r.origin !== "bundled").length + "개 리소스" : "아직 탐지하지 않음"}</span><ChevronRight size={16}/></div>
+            <strong>{labels[id]}</strong><div className="agent-summary"><span>{a ? managed.filter(r => r.agentId === id).length + "개 리소스" : "아직 탐지하지 않음"}</span><ChevronRight size={16}/></div>
           </button>;
         })}</div>
+        <CodexPanel result={inspection} snapshot={snapshot} busy={inspectionBusy} disabled={!native || busy || !snapshot} error={inspectionError} showBundled={showBundled} onInspect={includeMcp => void inspect(includeMcp)} onCancel={() => void cancelInspection()}/>
         <section className="inventory">
           <div className="inventory-heading"><div><h2>로컬 리소스 <span>{visible.length}</span></h2><p>공유 저장소에 없는 항목도 함께 표시합니다.</p></div><label className="search"><Search size={16}/><input aria-label="리소스 검색" placeholder="이름, 경로, 에이전트 검색" value={query} onChange={e => setQuery(e.target.value)}/>{query && <button aria-label="검색 초기화" onClick={() => setQuery("")}><X size={14}/></button>}</label></div>
           <div className="filters"><button className={kind === "all" ? "chosen" : ""} onClick={() => setKind("all")}>전체</button>{Object.entries(kinds).map(([id,item]) => <button key={id} className={kind === id ? "chosen" : ""} onClick={() => setKind(id)}>{item.label}</button>)}{agentId !== "all" && <button className="agent-filter" onClick={() => setAgentId("all")}>{labels[agentId]}<X size={12}/></button>}</div>
@@ -102,14 +134,14 @@ export default function App() {
               <div className="resource-name"><span className={"resource-icon " + r.kind}><Icon size={18}/></span><span><strong>{r.name}<small className="kind-label">{kinds[r.kind]?.label}</small></strong><small className="path" title={r.path}>{r.path}</small></span></div><span className="row-agent">{labels[r.agentId]}</span><span className="scope">{r.scope}</span><span className={"status " + r.status}>{statusLabel[r.status] ?? r.status}</span><ChevronRight size={15}/></button>; })}
             {!visible.length && <div className="empty">{busy ? <LoaderCircle className="spin" size={30}/> : <FolderOpen size={32}/>}<h3>{busy ? "로컬 환경을 확인하고 있어요" : snapshot ? "표시할 리소스가 없습니다" : "내 환경을 확인할 준비가 됐어요"}</h3><p>{snapshot ? "필터를 바꾸거나 탐지 경로에 프로젝트·설정 폴더를 추가하세요." : native ? "설정 파일과 알려진 경로를 확인합니다." : "데스크톱 앱으로 실행하면 실제 로컬 목록이 여기에 나타납니다."}</p>{snapshot && <button className="secondary" onClick={() => openSettings("paths")}>탐지 경로 설정</button>}</div>}
           </div>
-          <footer className="inventory-footer"><ShieldCheck size={14}/>설정은 변경하지 않습니다. 연결과 실제 실행 상태는 아직 검사하지 않습니다.</footer>
+          <footer className="inventory-footer"><ShieldCheck size={14}/>설정은 변경하지 않습니다. 항목 상세에서 조회 근거와 문맥을 확인하세요.</footer>
         </section>
         {warnings.length > 0 && <details className="warnings"><summary>일부 경로를 확인하지 못했습니다 · {warnings.length}개</summary>{warnings.map((w,i) => <p key={i}><strong>{w.name}</strong> {w.message}</p>)}</details>}
-        <div className="bottom-note"><span className="device-dot"/><span>실제 파일에서 확인한 목록</span><span className="separator">·</span><span>인증 값과 설정 원문은 표시하지 않습니다.</span></div>
+        <div className="bottom-note"><span className="device-dot"/><span>{inspection ? "파일 탐지와 Codex 직접 조회 결과" : "실제 파일에서 확인한 목록"}</span><span className="separator">·</span><span>인증 값과 설정 원문은 표시하지 않습니다.</span></div>
       </div>
     </main>
-    {selected && <div className="overlay" onClick={() => setSelected(null)}><aside className="detail-panel" aria-label="리소스 상세" onClick={e => e.stopPropagation()}><div className="panel-top"><span>리소스 상세</span><button aria-label="상세 닫기" onClick={() => setSelected(null)}><X size={20}/></button></div><span className="detail-icon">{(() => { const Icon = kinds[selected.kind].icon; return <Icon size={28}/>; })()}</span><h2>{selected.name}</h2><p className="detail-sub">{labels[selected.agentId]} · {kinds[selected.kind].label}</p><dl className="detail-list">{[{ label: "발견 위치", value: selected.path }, { label: "제공 구분", value: selected.origin === "bundled" ? "기본 제공" : selected.origin === "user" ? "사용자 구성" : "미확인" }, { label: "적용 범위", value: selected.scope }, { label: "설정 상태", value: statusLabel[selected.status] ?? selected.status }, { label: "근거", value: selected.source }, ...selected.details].map((d,i) => <div key={i}><dt>{d.label}</dt><dd>{d.value}</dd></div>)}</dl><div className="notice compact"><ShieldCheck size={18}/><p>이 항목을 발견했습니다. 현재 세션에서 로드·실행되었는지는 아직 직접 조회하지 않았습니다.</p></div></aside></div>}
-    {settings && <Settings initialTab={settingsTab} preferences={preferences} saveError={saveError} onPreferences={setPreferences} onClose={() => setSettings(false)} project={project} onProject={setProject} roots={roots} onRoots={setRoots} snapshot={snapshot} canScan={native && !busy} onScan={configure}/> }
+    {selected && <div className="overlay" onClick={() => setSelected(null)}><aside className="detail-panel" aria-label="리소스 상세" onClick={e => e.stopPropagation()}><div className="panel-top"><span>리소스 상세</span><button aria-label="상세 닫기" onClick={() => setSelected(null)}><X size={20}/></button></div><span className="detail-icon">{(() => { const Icon = kinds[selected.kind].icon; return <Icon size={28}/>; })()}</span><h2>{selected.name}</h2><p className="detail-sub">{labels[selected.agentId]} · {kinds[selected.kind].label}</p><dl className="detail-list">{[{ label: "발견 위치", value: selected.path }, { label: "제공 구분", value: selected.origin === "bundled" ? "기본 제공" : selected.origin === "user" ? "사용자 구성" : "미확인" }, { label: "적용 범위", value: selected.scope }, { label: "설정 상태", value: statusLabel[selected.status] ?? selected.status }, { label: "근거", value: selected.source }, ...selected.details].map((d,i) => <div key={i}><dt>{d.label}</dt><dd>{d.value}</dd></div>)}</dl><div className="notice compact"><ShieldCheck size={18}/><p>파일 탐지 또는 별도 조회 프로세스의 결과입니다. 현재 대화에서의 로드·실행 여부와 다를 수 있습니다.</p></div></aside></div>}
+    {settings && <Settings initialTab={settingsTab} preferences={preferences} saveError={saveError} onPreferences={setPreferences} onClose={() => setSettings(false)} project={project} onProject={setProject} roots={roots} onRoots={setRoots} snapshot={snapshot} canScan={native && !busy && !inspectionBusy} onScan={configure}/> }
   </div>;
 }
 function Stat({ label, value, suffix, icon: Icon }: { label: string; value: string | number; suffix: string; icon: typeof Boxes }) {

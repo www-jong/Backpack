@@ -9,6 +9,13 @@ serde_json = "1"
 toml = "0.8"
 json5 = "0.4"
 dirs = "6"
+tokio = { version = "1", features = ["process", "io-util", "time", "rt", "sync", "macros"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
