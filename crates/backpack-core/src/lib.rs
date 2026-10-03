@@ -37,6 +37,8 @@ pub struct Agent {
     pub config_roots: Vec<String>,
     pub resources: Vec<Resource>,
     pub warnings: Vec<String>,
+    #[serde(skip)]
+    builtin_runtime_root: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -116,6 +118,8 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
             config_roots: vec![display(&root)],
             resources: vec![],
             warnings: vec![],
+            builtin_runtime_root: cfg!(target_os = "windows")
+                .then(|| home.join("AppData/Local/OpenAI/Codex/runtimes")),
         };
         match id {
             "codex" => {
@@ -445,7 +449,37 @@ fn scan_config(agent: &mut Agent, path: &Path, scope: &str) {
                         ));
                     }
                 }
+                let builtin_runtime = agent.id == "codex"
+                    && agent.builtin_runtime_root.as_ref().is_some_and(|root| {
+                        config
+                            .get("command")
+                            .and_then(Value::as_str)
+                            .is_some_and(|command| {
+                                let command = Path::new(command);
+                                command
+                                    .file_name()
+                                    .is_some_and(|file| file == "node_repl.exe")
+                                    && command
+                                        .canonicalize()
+                                        .ok()
+                                        .zip(root.join("cua_node").canonicalize().ok())
+                                        .is_some_and(|(command, root)| command.starts_with(root))
+                            })
+                    });
                 push(agent, path, "mcp", name, scope, status(config), details);
+                if builtin_runtime {
+                    let resource = agent.resources.last_mut().expect("just inserted resource");
+                    if status(config) != "disabled" {
+                        resource.origin = "bundled".into();
+                    }
+                    resource.details.push(detail(
+                        "제공 근거",
+                        "Codex 설치 런타임의 node_repl 실행 파일",
+                    ));
+                    resource
+                        .details
+                        .push(detail("역할", "JavaScript 실행 · 컴퓨터 사용 연동"));
+                }
             }
         }
     }

@@ -322,3 +322,53 @@ fn unix_inventory_preserves_backslashes_in_file_names() {
         .unwrap();
     assert!(resource.path.contains("custom\\name/SKILL.md"));
 }
+
+#[test]
+#[cfg(target_os = "windows")]
+fn runtime_provenance_uses_executable_location_not_mcp_name() {
+    let home = TempDir::new().unwrap();
+    let runtime = "AppData/Local/OpenAI/Codex/runtimes/cua_node/version/bin/node_repl.exe";
+    write(home.path(), runtime, "test fixture, never execute");
+    write(
+        home.path(),
+        "custom/node_repl.exe",
+        "test fixture, never execute",
+    );
+    let supplied = home
+        .path()
+        .join(runtime)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let custom = home
+        .path()
+        .join("custom/node_repl.exe")
+        .to_string_lossy()
+        .replace('\\', "/");
+    write(
+        home.path(),
+        ".codex/config.toml",
+        &format!(
+            r#"
+[mcp_servers.runtime_alias]
+command = '{supplied}'
+[mcp_servers.node_repl]
+command = '{custom}'
+[mcp_servers.disabled_runtime]
+command = '{supplied}'
+enabled = false
+"#
+        ),
+    );
+    let snapshot = scan_at(home.path(), request(home.path())).unwrap();
+    let resources = &snapshot.agents[0].resources;
+    for (name, origin) in [
+        ("runtime_alias", "bundled"),
+        ("node_repl", "user"),
+        ("disabled_runtime", "user"),
+    ] {
+        assert_eq!(
+            resources.iter().find(|r| r.name == name).unwrap().origin,
+            origin
+        );
+    }
+}
