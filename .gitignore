@@ -1,0 +1,17 @@
+# 로컬 설계·개발 작업 문서
+/docs/design.md
+/docs/development-design.md
+/docs/local-integration-audit.md
+/docs/internal/
+
+# 공개 사용자 문서와 기여 문서는 필요할 때 docs/에 별도로 추가합니다.
+
+node_modules/
+.npm-cache/
+dist/
+target/
+src-tauri/gen/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
