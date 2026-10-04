@@ -1,6 +1,7 @@
 pub mod changes;
 pub mod cli;
 pub mod codex;
+pub mod library;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

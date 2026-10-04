@@ -17,3 +17,9 @@ export interface ChangePreview {path:string;name:string;action:string;before:str
 export interface BackupReceipt {id:string;path:string;name:string;action:string;createdAt:number;restorable:boolean;existed:boolean}
 export interface EditorData {targets:string[];backups:BackupReceipt[];servers:Record<string,string[]>;envReference:boolean;tokenReference:boolean;notice:string}
 export interface PreviewResult {token:string;change:ChangePreview}
+
+export interface LibraryFile {path:string;hash:string;size:number}
+export interface LibraryEntry {version:number;id:string;name:string;agentId:string;kind:ResourceKind;createdAt:number;files:LibraryFile[]}
+export interface ImportPreview {name:string;kind:ResourceKind;agentId:string;files:LibraryFile[];skipped:string[];totalBytes:number;note:string}
+export interface LibraryPreview {token:string;change:ImportPreview}
+export interface LibraryComparison {identical:boolean;files:{path:string;status:"equal"|"changed"|"libraryOnly"|"localOnly"}[]}

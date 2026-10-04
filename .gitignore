@@ -15,3 +15,7 @@ src-tauri/gen/
 .env
 .env.*
 !.env.example
+
+# 사용자 라이브러리는 앱 소스에서 제외합니다.
+.backpack-library/
+.backpack-init-*/

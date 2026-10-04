@@ -1,6 +1,7 @@
 use backpack_core::changes::{self, BackupReceipt, ChangePreview, McpDraft, PreparedChange};
 use backpack_core::cli::{inspect_cli, CliInspection};
 use backpack_core::codex::{inspect_codex, CodexInspection};
+use backpack_core::library::{self, Comparison, ImportPreview, LibraryEntry, PreparedImport};
 use backpack_core::{scan, ScanRequest, Snapshot};
 use serde::Serialize;
 use std::sync::{
@@ -170,6 +171,109 @@ async fn restore_mcp_backup(
     result
 }
 
+#[derive(Default)]
+struct LibraryState(Arc<Mutex<Option<PendingImport>>>);
+struct PendingImport {
+    token: String,
+    created: Instant,
+    patch: PreparedImport,
+}
+#[derive(Serialize)]
+struct LibraryPreview {
+    token: String,
+    change: ImportPreview,
+}
+#[tauri::command]
+async fn connect_library(path: String) -> Result<Vec<LibraryEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || library::connect(&path))
+        .await
+        .map_err(|_| "라이브러리 연결을 완료하지 못했습니다.".to_string())?
+}
+#[tauri::command]
+async fn list_library(path: String) -> Result<Vec<LibraryEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || library::list(&path))
+        .await
+        .map_err(|_| "라이브러리 목록을 읽지 못했습니다.".to_string())?
+}
+#[tauri::command]
+async fn preview_library_import(
+    path: String,
+    request: ScanRequest,
+    resource_id: String,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<LibraryPreview, String> {
+    let state = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut pending = state
+            .lock()
+            .map_err(|_| "가져오기 상태를 읽지 못했습니다.")?;
+        *pending = None;
+        let patch = library::prepare_at(&home()?, request, &path, &resource_id)?;
+        let token = format!(
+            "{:x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let result = LibraryPreview {
+            token: token.clone(),
+            change: patch.view.clone(),
+        };
+        *pending = Some(PendingImport {
+            token,
+            created: Instant::now(),
+            patch,
+        });
+        Ok(result)
+    })
+    .await
+    .map_err(|_| "가져오기 미리보기를 만들지 못했습니다.".to_string())?
+}
+#[tauri::command]
+async fn import_library_item(
+    token: String,
+    reviewed: bool,
+    state: tauri::State<'_, LibraryState>,
+    inspection: tauri::State<'_, InspectionState>,
+) -> Result<LibraryEntry, String> {
+    if !reviewed {
+        return Err("공유할 파일과 비밀 값 포함 여부를 먼저 확인하세요.".into());
+    }
+    begin_edit(&inspection)?;
+    let state = state.0.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut pending = state
+            .lock()
+            .map_err(|_| "가져오기 상태를 읽지 못했습니다.")?;
+        let current = pending
+            .as_ref()
+            .ok_or("먼저 가져오기 미리보기를 확인하세요.")?;
+        if current.token != token || current.created.elapsed() > Duration::from_secs(600) {
+            return Err("미리보기가 만료됐습니다. 다시 확인하세요.".into());
+        }
+        library::import(pending.take().ok_or("미리보기가 없습니다.")?.patch)
+    })
+    .await
+    .map_err(|_| "가져오기를 완료하지 못했습니다.".to_string())
+    .and_then(|r| r);
+    end_edit(&inspection);
+    result
+}
+#[tauri::command]
+async fn compare_library_item(
+    path: String,
+    item_id: String,
+    resource_id: String,
+    request: ScanRequest,
+) -> Result<Comparison, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        library::compare_at(&home()?, &request, &path, &item_id, &resource_id)
+    })
+    .await
+    .map_err(|_| "파일 비교를 완료하지 못했습니다.".to_string())?
+}
+
 #[tauri::command]
 async fn scan_inventory(request: ScanRequest) -> Result<Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || scan(request))
@@ -248,8 +352,14 @@ pub fn run() {
     tauri::Builder::default()
         .manage(InspectionState::default())
         .manage(EditorState::default())
+        .manage(LibraryState::default())
         .invoke_handler(tauri::generate_handler![
             scan_inventory,
+            connect_library,
+            list_library,
+            preview_library_import,
+            import_library_item,
+            compare_library_item,
             inspect_codex_inventory,
             inspect_cli_inventory,
             cancel_inspection,
