@@ -24,6 +24,10 @@ struct PendingChange {
 struct EditorData {
     targets: Vec<String>,
     backups: Vec<BackupReceipt>,
+    servers: std::collections::BTreeMap<String, Vec<String>>,
+    env_reference: bool,
+    token_reference: bool,
+    notice: String,
 }
 #[derive(Serialize)]
 struct PreviewResult {
@@ -55,8 +59,18 @@ fn end_edit(state: &InspectionState) {
 async fn mcp_editor_data(request: ScanRequest, agent_id: String) -> Result<EditorData, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let home = home()?;
+        let targets=changes::targets_at(&home,&request,&agent_id)?;
+        let servers=targets.iter().map(|path|(path.clone(),changes::editor_servers_at(&home,&request,&agent_id,path).unwrap_or_default())).collect();
         Ok(EditorData {
-            targets: changes::targets_at(&home, &request, &agent_id)?,
+            targets, servers,
+            env_reference: agent_id!="antigravity",
+            token_reference: !["antigravity","gemini"].contains(&agent_id.as_str()),
+            notice: match agent_id.as_str() {
+                "claude" => "프로젝트 폴더를 먼저 선택하세요. 새 서버는 ~/.claude.json의 해당 프로젝트 로컬 범위에 등록합니다. 기존 사용자·공유 프로젝트 MCP의 비활성 설정도 선택한 프로젝트에만 적용하며, 프로젝트 승인·조직 정책은 그대로 유지합니다.",
+                "gemini" => "선택한 파일의 mcp.excluded 목록을 변경합니다. 허용 목록을 자동으로 넓히지 않으며 다른 범위·조직 정책이 연결을 제한할 수 있습니다. 원격 등록은 Streamable HTTP입니다.",
+                "antigravity" => "disabled 설정으로 전환합니다. 서버 URL은 serverUrl로 저장하며, 환경 변수 참조와 새 인증 설정 등록은 아직 지원하지 않습니다.",
+                _ => "선택한 파일의 활성 설정을 변경합니다. 다른 범위·조직 정책과 실행 중인 세션의 연결 상태는 별도로 확인하세요.",
+            }.into(),
             backups: changes::list_backups_at(
                 &home,
                 &request,

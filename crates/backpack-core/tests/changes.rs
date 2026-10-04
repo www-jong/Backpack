@@ -6,6 +6,7 @@ fn setup(id: &str, file: &str, text: &str) -> (TempDir, ScanRequest, McpDraft) {
     let root = dir.path().join("config");
     fs::create_dir(&root).unwrap();
     let path = root.join(file);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
     if !text.is_empty() {
         fs::write(&path, text).unwrap();
     }
@@ -226,4 +227,283 @@ fn remote_registration_and_toggle_chain_preserve_existing_configuration() {
         draft.url = "https://user:password@example.invalid/mcp".into();
         assert!(prepare_at(dir.path(), &req, draft).is_err());
     }
+}
+
+#[test]
+fn antigravity_registration_toggles_disabled_and_preserves_authentication() {
+    let original = r#"{ // keep
+      "mcpServers":{"sample":{"serverUrl":"https://example.invalid/mcp","headers":{"Authorization":"SECRET"},"disabled":false}}
+    }"#;
+    let (dir, req, mut draft) = setup("antigravity", "config/mcp_config.json", original);
+    let backups = dir.path().join("backups");
+    let receipt = apply(
+        prepare_at(dir.path(), &req, draft.clone()).unwrap(),
+        &backups,
+    )
+    .unwrap();
+    let text = fs::read_to_string(&draft.path).unwrap();
+    let value: serde_json::Value = json5::from_str(&text).unwrap();
+    assert_eq!(value["mcpServers"]["sample"]["disabled"], true);
+    assert_eq!(
+        value["mcpServers"]["sample"]["headers"]["Authorization"],
+        "SECRET"
+    );
+    let snapshot = backpack_core::scan_at(dir.path(), req.clone()).unwrap();
+    assert_eq!(
+        snapshot
+            .agents
+            .iter()
+            .find(|a| a.id == "antigravity")
+            .unwrap()
+            .resources
+            .iter()
+            .find(|r| r.kind == "mcp")
+            .unwrap()
+            .status,
+        "disabled"
+    );
+    restore_at(dir.path(), &req, "antigravity", &backups, &receipt.id).unwrap();
+    assert_eq!(fs::read_to_string(&draft.path).unwrap(), original);
+    draft.action = "register".into();
+    draft.name = "remote".into();
+    draft.url = "https://example.invalid/new".into();
+    apply(
+        prepare_at(dir.path(), &req, draft.clone()).unwrap(),
+        &backups,
+    )
+    .unwrap();
+    let value: serde_json::Value =
+        json5::from_str(&fs::read_to_string(&draft.path).unwrap()).unwrap();
+    assert_eq!(value["mcpServers"]["remote"]["serverUrl"], draft.url);
+    assert_eq!(value["mcpServers"]["remote"]["disabled"], true);
+    assert!(value["mcpServers"]["remote"].get("enabled").is_none());
+    draft.name = "another".into();
+    draft.token_env = "TOKEN".into();
+    assert!(prepare_at(dir.path(), &req, draft).is_err());
+}
+#[test]
+fn gemini_exclusions_preserve_allowlist_and_register_correct_transports() {
+    let original = r#"{ // keep
+      "mcp":{"allowed":["sample"],"excluded":[/* list comment */ "other"]},
+      "mcpServers":{"sample":{"command":"unused","env":{"SECRET":"kept"}}}
+    }"#;
+    let (dir, req, mut draft) = setup("gemini", "settings.json", original);
+    let backups = dir.path().join("backups");
+    let receipt = apply(
+        prepare_at(dir.path(), &req, draft.clone()).unwrap(),
+        &backups,
+    )
+    .unwrap();
+    let text = fs::read_to_string(&draft.path).unwrap();
+    assert!(text.contains("// keep"));
+    assert!(text.contains("/* list comment */"));
+    let value: serde_json::Value = json5::from_str(&text).unwrap();
+    assert_eq!(
+        value["mcp"]["excluded"],
+        serde_json::json!(["other", "sample"])
+    );
+    assert_eq!(value["mcp"]["allowed"], serde_json::json!(["sample"]));
+    let snapshot = backpack_core::scan_at(dir.path(), req.clone()).unwrap();
+    let resources = &snapshot
+        .agents
+        .iter()
+        .find(|a| a.id == "gemini")
+        .unwrap()
+        .resources;
+    assert_eq!(resources.iter().filter(|r| r.kind == "mcp").count(), 1);
+    assert_eq!(
+        resources
+            .iter()
+            .find(|r| r.name == "sample")
+            .unwrap()
+            .status,
+        "disabled"
+    );
+    draft.action = "enable".into();
+    apply(
+        prepare_at(dir.path(), &req, draft.clone()).unwrap(),
+        &backups,
+    )
+    .unwrap();
+    draft.action = "register".into();
+    draft.name = "blocked".into();
+    draft.command = "unused".into();
+    draft.enabled = true;
+    assert!(prepare_at(dir.path(), &req, draft.clone()).is_err());
+    draft.enabled = false;
+    draft.env_names = vec!["MY_TOKEN".into()];
+    apply(
+        prepare_at(dir.path(), &req, draft.clone()).unwrap(),
+        &backups,
+    )
+    .unwrap();
+    let value: serde_json::Value =
+        json5::from_str(&fs::read_to_string(&draft.path).unwrap()).unwrap();
+    assert_eq!(
+        value["mcpServers"]["blocked"]["env"]["MY_TOKEN"],
+        "${MY_TOKEN}"
+    );
+    draft.name = "remote".into();
+    draft.command.clear();
+    draft.env_names.clear();
+    draft.url = "https://example.invalid/mcp".into();
+    apply(
+        prepare_at(dir.path(), &req, draft.clone()).unwrap(),
+        &backups,
+    )
+    .unwrap();
+    let value: serde_json::Value =
+        json5::from_str(&fs::read_to_string(&draft.path).unwrap()).unwrap();
+    assert_eq!(value["mcpServers"]["remote"]["httpUrl"], draft.url);
+    assert!(
+        !list_backups_at(dir.path(), &req, "gemini", &backups)
+            .unwrap()
+            .iter()
+            .find(|b| b.id == receipt.id)
+            .unwrap()
+            .restorable
+    );
+    fs::write(&draft.path, r#"{"mcp":{"excluded":"bad"},"mcpServers":{}}"#).unwrap();
+    draft.name = "bad".into();
+    assert!(prepare_at(dir.path(), &req, draft).is_err());
+}
+#[test]
+fn claude_local_registration_and_project_toggle_do_not_change_other_projects() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path().join("project");
+    fs::create_dir(&project).unwrap();
+    let key = project.to_string_lossy().replace('\\', "/");
+    let original=serde_json::json!({"sessionSecret":"SECRET","mcpServers":{"global":{"type":"stdio","command":"unused"}},"projects":{key.clone():{"disabledMcpServers":["unrelated"],"trust":true},"/unrelated/project":{"disabledMcpServers":["global"],"keep":true}}}).to_string();
+    let path = dir.path().join(".claude.json");
+    fs::write(&path, &original).unwrap();
+    let shared = r#"{"mcpServers":{"shared":{"type":"http","url":"https://example.invalid/mcp"}}}"#;
+    fs::write(project.join(".mcp.json"), shared).unwrap();
+    let req = ScanRequest {
+        project_path: Some(project.to_string_lossy().into()),
+        ..Default::default()
+    };
+    let mut draft = McpDraft {
+        agent_id: "claude".into(),
+        path: path.to_string_lossy().into(),
+        name: "global".into(),
+        action: "disable".into(),
+        ..Default::default()
+    };
+    let backups = dir.path().join("backups");
+    let receipt = apply(
+        prepare_at(dir.path(), &req, draft.clone()).unwrap(),
+        &backups,
+    )
+    .unwrap();
+    let value: serde_json::Value = json5::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        value["projects"][&key]["disabledMcpServers"],
+        serde_json::json!(["unrelated", "global"])
+    );
+    assert_eq!(
+        value["projects"]["/unrelated/project"]["disabledMcpServers"],
+        serde_json::json!(["global"])
+    );
+    assert_eq!(value["sessionSecret"], "SECRET");
+    assert_eq!(value["mcpServers"]["global"]["command"], "unused");
+    restore_at(dir.path(), &req, "claude", &backups, &receipt.id).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    draft.name = "shared".into();
+    apply(
+        prepare_at(dir.path(), &req, draft.clone()).unwrap(),
+        &backups,
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(project.join(".mcp.json")).unwrap(),
+        shared
+    );
+    let names = editor_servers_at(dir.path(), &req, "claude", &draft.path).unwrap();
+    assert!(names.contains(&"shared".into()));
+    assert!(names.contains(&"global".into()));
+    draft.action = "register".into();
+    draft.url = "https://example.invalid/new".into();
+    assert!(prepare_at(dir.path(), &req, draft.clone()).is_err());
+    draft.name = "local".into();
+    draft.token_env = "MY_TOKEN".into();
+    let preview = prepare_at(dir.path(), &req, draft.clone()).unwrap();
+    assert!(!serde_json::to_string(&preview.view)
+        .unwrap()
+        .contains("SECRET"));
+    apply(preview, &backups).unwrap();
+    let value: serde_json::Value = json5::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        value["projects"][&key]["mcpServers"]["local"]["headers"]["Authorization"],
+        "Bearer ${MY_TOKEN}"
+    );
+    assert!(value["mcpServers"].get("local").is_none());
+    let snapshot = backpack_core::scan_at(dir.path(), req.clone()).unwrap();
+    let resources = &snapshot
+        .agents
+        .iter()
+        .find(|a| a.id == "claude")
+        .unwrap()
+        .resources;
+    assert_eq!(
+        resources.iter().find(|r| r.name == "local").unwrap().status,
+        "disabled"
+    );
+    assert!(resources.iter().find(|r| r.name == "shared").is_some());
+    assert!(prepare_at(dir.path(), &ScanRequest::default(), draft).is_err());
+}
+#[test]
+fn claude_new_project_key_uses_normal_path_and_antigravity_project_path_is_supported() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path().join("project");
+    fs::create_dir_all(project.join(".agents")).unwrap();
+    let req = ScanRequest {
+        project_path: Some(project.to_string_lossy().into()),
+        ..Default::default()
+    };
+    let draft = McpDraft {
+        agent_id: "claude".into(),
+        path: dir.path().join(".claude.json").to_string_lossy().into(),
+        name: "sample".into(),
+        action: "register".into(),
+        command: "never-run".into(),
+        ..Default::default()
+    };
+    apply(
+        prepare_at(dir.path(), &req, draft.clone()).unwrap(),
+        &dir.path().join("backups"),
+    )
+    .unwrap();
+    let value: serde_json::Value =
+        json5::from_str(&fs::read_to_string(&draft.path).unwrap()).unwrap();
+    let key = value["projects"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap();
+    assert!(!key.starts_with("//?/"));
+    assert_eq!(
+        Path::new(key).canonicalize().unwrap(),
+        project.canonicalize().unwrap()
+    );
+    let mut draft = draft;
+    draft.agent_id = "antigravity".into();
+    draft.path = project
+        .join(".agents/mcp_config.json")
+        .to_string_lossy()
+        .into();
+    apply(
+        prepare_at(dir.path(), &req, draft.clone()).unwrap(),
+        &dir.path().join("backups"),
+    )
+    .unwrap();
+    let snapshot = backpack_core::scan_at(dir.path(), req).unwrap();
+    assert!(snapshot
+        .agents
+        .iter()
+        .find(|a| a.id == "antigravity")
+        .unwrap()
+        .resources
+        .iter()
+        .any(|r| r.name == "sample" && r.status == "disabled"));
 }

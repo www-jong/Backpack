@@ -1,7 +1,7 @@
 export type ResourceKind = "skill" | "rule" | "tool" | "hook" | "mcp" | "plugin" | "setting";
 export interface Detail { label: string; value: string }
 export interface Resource { id: string; agentId: string; kind: ResourceKind; name: string; path: string; scope: string; status: string; source: string; origin: "user" | "bundled" | "unknown"; details: Detail[] }
-export interface Agent { id: string; name: string; executable: string | null; configRoots: string[]; resources: Resource[]; warnings: string[]; custom: boolean; inspection: "app-server" | "mcp-cli" | "file" }
+export interface Agent { id: string; name: string; executable: string | null; configRoots: string[]; resources: Resource[]; warnings: string[]; custom: boolean; mcpEditing:boolean; inspection: "app-server" | "mcp-cli" | "file" }
 export interface Snapshot { scannedAt: number; platform: string; home: string; projectPath: string | null; agents: Agent[] }
 export interface ScanRequest { projectPath?: string; roots?: Record<string, string>; customAgents?: CustomAgent[] }
 export interface QueryState { status: "success" | "partial" | "unsupported" | "error" | "skipped"; message: string }
@@ -15,5 +15,5 @@ export interface CliInspection { agentId:string; observedAt:number; version:stri
 export interface McpDraft { agentId:string; path:string; name:string; action:"register"|"enable"|"disable"; command:string; args:string[]; url:string; envNames:string[]; tokenEnv:string; enabled:boolean }
 export interface ChangePreview {path:string;name:string;action:string;before:string;after:string;transport:string;envNames:string[];createsFile:boolean}
 export interface BackupReceipt {id:string;path:string;name:string;action:string;createdAt:number;restorable:boolean;existed:boolean}
-export interface EditorData {targets:string[];backups:BackupReceipt[]}
+export interface EditorData {targets:string[];backups:BackupReceipt[];servers:Record<string,string[]>;envReference:boolean;tokenReference:boolean;notice:string}
 export interface PreviewResult {token:string;change:ChangePreview}

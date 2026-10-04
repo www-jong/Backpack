@@ -113,7 +113,7 @@ fn read_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
     Ok(Some(bytes))
 }
 pub fn targets_at(home: &Path, request: &ScanRequest, id: &str) -> Result<Vec<String>, String> {
-    if !["codex", "opencode"].contains(&id) {
+    if !["codex", "opencode", "claude", "antigravity", "gemini"].contains(&id) {
         return Err("이 에이전트의 MCP 설정 적용은 아직 지원하지 않습니다.".into());
     }
     let snapshot = scan_at(home, request.clone())?;
@@ -129,7 +129,7 @@ pub fn targets_at(home: &Path, request: &ScanRequest, id: &str) -> Result<Vec<St
         if let Some(project) = &snapshot.project_path {
             paths.push(Path::new(project).join(".codex/config.toml"));
         }
-    } else {
+    } else if id == "opencode" {
         for file in ["opencode.json", "opencode.jsonc"] {
             paths.push(root.join(file));
             if let Some(project) = &snapshot.project_path {
@@ -141,6 +141,27 @@ pub fn targets_at(home: &Path, request: &ScanRequest, id: &str) -> Result<Vec<St
             if file.is_absolute() {
                 paths.push(file);
             }
+        }
+    }
+    if id == "claude" {
+        if request.roots.contains_key(id) || std::env::var_os("CLAUDE_CONFIG_DIR").is_some() {
+            return Err(
+                "Claude의 사용자 지정 설정 루트는 쓰기 경로가 확인되지 않아 탐지만 지원합니다."
+                    .into(),
+            );
+        }
+        paths.push(home.join(".claude.json"));
+    }
+    if id == "antigravity" {
+        paths.push(root.join("config/mcp_config.json"));
+        if let Some(project) = &snapshot.project_path {
+            paths.push(Path::new(project).join(".agents/mcp_config.json"));
+        }
+    }
+    if id == "gemini" {
+        paths.push(root.join("settings.json"));
+        if let Some(project) = &snapshot.project_path {
+            paths.push(Path::new(project).join(".gemini/settings.json"));
         }
     }
     paths.sort();
@@ -320,6 +341,304 @@ fn edit_json(text: &str, d: &McpDraft) -> Result<(String, Option<bool>), String>
         Ok((root.to_string(), before))
     }
 }
+
+fn parse_root(text: &str) -> Result<CstRootNode, String> {
+    CstRootNode::parse(
+        text,
+        &ParseOptions {
+            allow_comments: true,
+            allow_trailing_commas: true,
+            allow_loose_object_property_names: false,
+            allow_missing_commas: false,
+            allow_single_quoted_strings: false,
+            allow_hexadecimal_numbers: false,
+            allow_unary_plus_numbers: false,
+        },
+    )
+    .map_err(|_| "JSON·JSONC 설정 형식을 해석하지 못했습니다.".into())
+}
+fn names(object: &CstObject, key: &str) -> Result<Vec<String>, String> {
+    let Some(property) = object.get(key) else {
+        return Ok(vec![]);
+    };
+    let value: Value = json5::from_str(&property.value().ok_or("설정 값이 없습니다.")?.to_string())
+        .map_err(|_| "서버 목록 형식을 해석하지 못했습니다.")?;
+    let values = value
+        .as_array()
+        .ok_or("서버 목록은 문자열 배열이어야 합니다.")?;
+    values
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "서버 목록은 문자열 배열이어야 합니다.".into())
+        })
+        .collect()
+}
+fn set_name(object: &CstObject, key: &str, name: &str, included: bool) -> Result<bool, String> {
+    let values = names(object, key)?;
+    let before = values.iter().any(|v| v == name);
+    if before == included {
+        return Ok(before);
+    }
+    let array = object
+        .array_value_or_create(key)
+        .ok_or("서버 목록은 배열이어야 합니다.")?;
+    if included {
+        array.append(CstInputValue::String(name.into()));
+    } else {
+        for (element, value) in array.elements().into_iter().zip(values) {
+            if value == name {
+                element.remove();
+            }
+        }
+    }
+
+    Ok(before)
+}
+fn project_object(root: &CstObject, project: Option<&str>) -> Result<CstObject, String> {
+    let path =
+        Path::new(project.ok_or("Claude MCP 변경은 먼저 앱 설정에서 프로젝트 폴더를 선택하세요.")?);
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| "프로젝트 경로를 확인하세요.")?;
+    let projects = root
+        .object_value_or_create("projects")
+        .ok_or("projects 설정은 객체여야 합니다.")?;
+    unique(&projects)?;
+    let matches = projects
+        .properties()
+        .into_iter()
+        .filter_map(|p| p.name()?.decoded_value().ok())
+        .filter(|key| Path::new(key).canonicalize().ok().as_ref() == Some(&canonical))
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        return Err("동일 프로젝트의 설정 키가 중복되어 변경하지 않습니다.".into());
+    }
+    let key = matches.into_iter().next().unwrap_or_else(|| {
+        let raw = canonical.to_string_lossy();
+        let normal = if cfg!(windows) {
+            if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+                format!(r"\\{unc}")
+            } else {
+                raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
+            }
+        } else {
+            raw.to_string()
+        };
+        normal.replace('\\', "/")
+    });
+    let object = projects
+        .object_value_or_create(&key)
+        .ok_or("프로젝트 설정은 객체여야 합니다.")?;
+    unique(&object)?;
+    Ok(object)
+}
+fn claude_shared(project: Option<&str>) -> Result<Option<CstRootNode>, String> {
+    let Some(project) = project else {
+        return Ok(None);
+    };
+    let Some(bytes) = read_file(&Path::new(project).join(".mcp.json"))? else {
+        return Ok(None);
+    };
+    let root = parse_root(
+        std::str::from_utf8(&bytes).map_err(|_| "프로젝트 MCP 파일은 UTF-8이어야 합니다.")?,
+    )?;
+    let object = root
+        .object_value()
+        .ok_or("프로젝트 MCP 루트는 객체여야 합니다.")?;
+    unique(&object)?;
+    if let Some(servers) = object.object_value("mcpServers") {
+        unique(&servers)?;
+    }
+    Ok(Some(root))
+}
+fn edit_standard_json(
+    text: &str,
+    d: &McpDraft,
+    project: Option<&str>,
+) -> Result<(String, Option<bool>), String> {
+    if d.agent_id == "antigravity" && (!d.env_names.is_empty() || !d.token_env.is_empty()) {
+        return Err("Antigravity의 환경 변수 참조 등록은 아직 지원하지 않습니다. 기존 인증 설정은 유지합니다.".into());
+    }
+    if d.agent_id == "gemini" && !d.token_env.is_empty() {
+        return Err("Gemini 원격 헤더의 환경 변수 참조 등록은 아직 지원하지 않습니다.".into());
+    }
+    let root = parse_root(text)?;
+    let obj = root.object_value().ok_or("설정 루트는 객체여야 합니다.")?;
+    unique(&obj)?;
+    if let Some(global) = obj.object_value("mcpServers") {
+        unique(&global)?;
+    }
+    let context = if d.agent_id == "claude" {
+        project_object(&obj, project)?
+    } else {
+        obj.clone()
+    };
+    let servers = context
+        .object_value_or_create("mcpServers")
+        .ok_or("mcpServers 설정은 객체여야 합니다.")?;
+    unique(&servers)?;
+    let shared = if d.agent_id == "claude" {
+        claude_shared(project)?
+    } else {
+        None
+    };
+    let shared_server = shared
+        .as_ref()
+        .and_then(|r| r.object_value())
+        .and_then(|o| o.object_value("mcpServers"))
+        .and_then(|m| m.get(&d.name));
+    let exists = servers.get(&d.name);
+    let enabled = if d.action == "register" {
+        d.enabled
+    } else {
+        d.action == "enable"
+    };
+    let policy = if d.agent_id == "gemini" {
+        obj.object_value_or_create("mcp")
+            .ok_or("mcp 설정은 객체여야 합니다.")?
+    } else {
+        context.clone()
+    };
+    unique(&policy)?;
+    let list_key = if d.agent_id == "gemini" {
+        "excluded"
+    } else {
+        "disabledMcpServers"
+    };
+    let before = if d.agent_id == "antigravity" {
+        None
+    } else {
+        Some(!names(&policy, list_key)?.iter().any(|n| n == &d.name))
+    };
+    if d.agent_id == "gemini"
+        && enabled
+        && policy.get("allowed").is_some()
+        && !names(&policy, "allowed")?.contains(&d.name)
+    {
+        return Err(
+            "mcp.allowed 허용 목록에 없는 서버입니다. 허용 목록은 자동으로 넓히지 않습니다.".into(),
+        );
+    }
+    if d.action == "register" {
+        if exists.is_some()
+            || shared_server.is_some()
+            || (d.agent_id == "claude"
+                && obj
+                    .object_value("mcpServers")
+                    .is_some_and(|m| m.get(&d.name).is_some()))
+        {
+            return Err("같은 이름의 MCP가 이미 등록되어 있습니다.".into());
+        }
+        let mut server = if d.url.is_empty() {
+            json!({"command":d.command,"args":d.args})
+        } else {
+            match d.agent_id.as_str() {
+                "claude" => json!({"type":"http","url":d.url}),
+                "antigravity" => json!({"serverUrl":d.url}),
+                _ => json!({"httpUrl":d.url}),
+            }
+        };
+        if d.agent_id == "claude" && d.url.is_empty() {
+            server["type"] = json!("stdio")
+        }
+        if !d.env_names.is_empty() {
+            server["env"] = json!(d
+                .env_names
+                .iter()
+                .map(|n| (n.clone(), format!("${{{n}}}")))
+                .collect::<std::collections::BTreeMap<_, _>>());
+        }
+        if !d.token_env.is_empty() {
+            server["headers"] = json!({"Authorization":format!("Bearer ${{{}}}",d.token_env)});
+        }
+        if d.agent_id == "antigravity" {
+            server["disabled"] = json!(!enabled)
+        }
+        servers.append(&d.name, input(server));
+    } else {
+        let server = exists
+            .or(shared_server)
+            .or_else(|| {
+                if d.agent_id == "claude" {
+                    obj.object_value("mcpServers").and_then(|m| m.get(&d.name))
+                } else {
+                    None
+                }
+            })
+            .ok_or("이 설정 파일에 해당 MCP가 없습니다.")?
+            .object_value()
+            .ok_or("MCP 정의는 객체여야 합니다.")?;
+        unique(&server)?;
+        if d.agent_id == "antigravity" {
+            let current: Value = json5::from_str(&server.to_string())
+                .map_err(|_| "MCP 형식이 올바르지 않습니다.")?;
+            let old = current
+                .get("disabled")
+                .map(|v| v.as_bool().ok_or("disabled 설정이 불리언이 아닙니다."))
+                .transpose()?;
+            if let Some(p) = server.get("disabled") {
+                p.set_value(input(json!(!enabled)));
+            } else {
+                server.append("disabled", input(json!(!enabled)));
+            }
+            return Ok((root.to_string(), Some(!old.unwrap_or(false))));
+        }
+    }
+    if d.agent_id != "antigravity" {
+        set_name(&policy, list_key, &d.name, !enabled)?;
+    }
+    Ok((
+        root.to_string(),
+        if d.action == "register" { None } else { before },
+    ))
+}
+
+/// Only names are returned; raw connection definitions never cross IPC.
+pub fn editor_servers_at(
+    home: &Path,
+    request: &ScanRequest,
+    id: &str,
+    target: &str,
+) -> Result<Vec<String>, String> {
+    target_at(home, request, id, target)?;
+    if id != "claude" {
+        return Ok(scan_at(home, request.clone())?
+            .agents
+            .into_iter()
+            .find(|a| a.id == id)
+            .into_iter()
+            .flat_map(|a| a.resources)
+            .filter(|r| r.kind == "mcp" && r.path == target)
+            .map(|r| r.name)
+            .collect());
+    }
+    let text = read_file(Path::new(target))?.unwrap_or_else(|| b"{}".to_vec());
+    let root =
+        parse_root(std::str::from_utf8(&text).map_err(|_| "UTF-8 설정 파일만 지원합니다.")?)?;
+    let obj = root.object_value().ok_or("설정 루트는 객체여야 합니다.")?;
+    let context = project_object(&obj, request.project_path.as_deref())?;
+    let mut out = vec![];
+    let shared = claude_shared(request.project_path.as_deref())?;
+    let mut owners = vec![obj, context];
+    if let Some(shared) = shared.as_ref().and_then(|r| r.object_value()) {
+        owners.push(shared)
+    }
+    for owner in owners {
+        if let Some(servers) = owner.object_value("mcpServers") {
+            unique(&servers)?;
+            for property in servers.properties() {
+                if let Some(name) = property.name().and_then(|n| n.decoded_value().ok()) {
+                    out.push(name);
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
 fn edit_toml(text: &str, d: &McpDraft) -> Result<(String, Option<bool>), String> {
     let mut doc = text
         .parse::<toml_edit::DocumentMut>()
@@ -399,8 +718,14 @@ pub fn prepare_at(
         .map_err(|_| "UTF-8 설정 파일만 변경할 수 있습니다.")?;
     let (after, old) = if draft.agent_id == "codex" {
         edit_toml(text.unwrap_or(""), &draft)?
-    } else {
+    } else if draft.agent_id == "opencode" {
         edit_json(text.unwrap_or("{}\n"), &draft)?
+    } else {
+        edit_standard_json(
+            text.unwrap_or("{}\n"),
+            &draft,
+            request.project_path.as_deref(),
+        )?
     };
     if after.len() as u64 > MAX {
         return Err("변경 결과가 크기 제한을 초과합니다.".into());
@@ -429,9 +754,31 @@ pub fn prepare_at(
                     }
                     .into()
                 })
+                .map(|label: String| {
+                    if ["claude", "antigravity", "gemini"].contains(&draft.agent_id.as_str()) {
+                        if old == Some(true) {
+                            "파일 기준 활성".into()
+                        } else {
+                            "파일 기준 비활성".into()
+                        }
+                    } else {
+                        label
+                    }
+                })
                 .unwrap_or_else(|| "enabled 미지정 (기본값)".into())
             },
-            after: format!("enabled = {enabled}"),
+            after: if draft.agent_id == "antigravity" {
+                format!("disabled = {}", !enabled)
+            } else if ["claude", "gemini"].contains(&draft.agent_id.as_str()) {
+                if enabled {
+                    "비활성 목록에서 제외"
+                } else {
+                    "비활성 목록에 추가"
+                }
+                .into()
+            } else {
+                format!("enabled = {enabled}")
+            },
             transport: if draft.action != "register" {
                 "기존 연결 정의 유지"
             } else if draft.url.is_empty() {

@@ -114,6 +114,7 @@ pub struct Agent {
     pub warnings: Vec<String>,
     pub custom: bool,
     pub inspection: String,
+    pub mcp_editing: bool,
     #[serde(skip)]
     builtin_runtime_root: Option<PathBuf>,
 }
@@ -192,6 +193,7 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
             resources: vec![],
             warnings: vec![],
             custom: false,
+            mcp_editing: ["codex", "opencode", "claude", "antigravity", "gemini"].contains(&id),
             inspection: match id {
                 "codex" => "app-server",
                 "claude" | "opencode" | "gemini" => "mcp-cli",
@@ -290,7 +292,12 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
                 }
                 "antigravity" => {
                     scan_config(&mut agent, &pr.join("hooks.json"), "프로젝트");
-                    scan_config(&mut agent, &pr.join("mcp.json"), "프로젝트");
+                    scan_config(
+                        &mut agent,
+                        &pr.join("mcp.json"),
+                        "프로젝트 (레거시 경로 · 적용 여부 미확인)",
+                    );
+                    scan_config(&mut agent, &pr.join("mcp_config.json"), "프로젝트");
                 }
                 "opencode" => {
                     for f in ["opencode.json", "opencode.jsonc"] {
@@ -316,6 +323,11 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
                 _ => {}
             }
         }
+        if id == "claude" {
+            if let Some(project) = project.as_deref() {
+                scan_claude_context(&mut agent, &home.join(".claude.json"), project);
+            }
+        }
         let mut seen = HashSet::new();
         agent.resources.retain(|r| seen.insert(r.id.clone()));
         agent
@@ -337,6 +349,7 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
             resources: vec![],
             warnings: vec![],
             custom: true,
+            mcp_editing: false,
             inspection: "file".into(),
             builtin_runtime_root: None,
         };
@@ -564,6 +577,9 @@ fn scan_scripts(agent: &mut Agent, root: &Path, kind: &str, scope: &str) {
     }
 }
 fn status(config: &Value) -> &'static str {
+    if config.get("disabled").and_then(Value::as_bool) == Some(true) {
+        return "disabled";
+    }
     match config.get("enabled").and_then(Value::as_bool) {
         Some(false) => "disabled",
         Some(true) => "enabled",
@@ -571,6 +587,59 @@ fn status(config: &Value) -> &'static str {
     }
 }
 
+fn scan_claude_context(agent: &mut Agent, path: &Path, project: &Path) {
+    let Some(text) = read_text(agent, path) else {
+        return;
+    };
+    let Ok(value) = json5::from_str::<Value>(&text) else {
+        return;
+    };
+    let canonical = project.canonicalize().ok();
+    let Some(context) = value
+        .get("projects")
+        .and_then(Value::as_object)
+        .and_then(|projects| {
+            projects
+                .iter()
+                .find(|(key, _)| Path::new(key).canonicalize().ok() == canonical)
+                .map(|(_, v)| v)
+        })
+    else {
+        return;
+    };
+    if let Some(servers) = context.get("mcpServers").and_then(Value::as_object) {
+        for (name, _) in servers {
+            push(
+                agent,
+                path,
+                "mcp",
+                name,
+                "프로젝트 로컬",
+                "configured",
+                vec![detail("적용 범위", "선택한 프로젝트의 로컬 MCP 정의")],
+            );
+        }
+    }
+    for resource in &mut agent.resources {
+        if resource.kind == "mcp" {
+            let disabled = context
+                .get("disabledMcpServers")
+                .and_then(Value::as_array)
+                .is_some_and(|list| list.iter().any(|v| v.as_str() == Some(&resource.name)));
+            if disabled {
+                resource.status = "disabled".into();
+            }
+            resource.details.push(detail(
+                "프로젝트별 비활성 설정",
+                if disabled {
+                    "비활성 목록에 포함"
+                } else {
+                    "비활성 목록에 없음 · 승인/연결 상태 별도 확인"
+                },
+            ));
+        }
+    }
+}
 fn scan_config(agent: &mut Agent, path: &Path, scope: &str) {
     let Some(text) = read_text(agent, path) else {
         return;
@@ -606,13 +675,19 @@ fn scan_config(agent: &mut Agent, path: &Path, scope: &str) {
         )],
     );
     for key in ["mcp_servers", "mcpServers", "mcp"] {
+        if agent.id == "gemini" && key == "mcp" {
+            continue;
+        }
         if let Some(map) = value.get(key).and_then(Value::as_object) {
             for (name, config) in map {
                 let mut details = vec![
                     detail("설정 키", key),
                     detail("연결 상태", "아직 직접 조회하지 않음"),
                 ];
-                let mode = if config.get("url").is_some() {
+                let mode = if ["url", "httpUrl", "serverUrl"]
+                    .iter()
+                    .any(|key| config.get(key).is_some())
+                {
                     "원격 URL"
                 } else {
                     "로컬 명령"
@@ -643,7 +718,22 @@ fn scan_config(agent: &mut Agent, path: &Path, scope: &str) {
                                         .is_some_and(|(command, root)| command.starts_with(root))
                             })
                     });
-                push(agent, path, "mcp", name, scope, status(config), details);
+                let mut configured_status = status(config);
+                if agent.id == "gemini" {
+                    let policy = value.get("mcp");
+                    let excluded = policy
+                        .and_then(|p| p.get("excluded"))
+                        .and_then(Value::as_array)
+                        .is_some_and(|list| list.iter().any(|v| v.as_str() == Some(name)));
+                    let forbidden = policy
+                        .and_then(|p| p.get("allowed"))
+                        .and_then(Value::as_array)
+                        .is_some_and(|list| !list.iter().any(|v| v.as_str() == Some(name)));
+                    if excluded || forbidden {
+                        configured_status = "disabled";
+                    }
+                }
+                push(agent, path, "mcp", name, scope, configured_status, details);
                 if builtin_runtime {
                     let resource = agent.resources.last_mut().expect("just inserted resource");
                     if status(config) != "disabled" {

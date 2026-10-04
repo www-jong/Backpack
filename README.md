@@ -24,15 +24,17 @@ CLI 조회에도 취소·45초 제한·출력 크기 제한·조회 프로세스
 
 ## MCP 설정 변경
 
-Codex와 OpenCode의 개별 에이전트 섹션에서 새 MCP 등록·활성화·비활성화를 지원합니다. 로컬 명령·인자와 HTTP URL을 등록할 수 있고, 새 연결은 기본으로 비활성 설정을 저장합니다. 환경 변수는 이름으로 참조하며 값은 가져오지 않습니다. 변경 자체는 MCP 서버·모델·tool을 실행하지 않습니다. 실행 중인 에이전트에는 재시작·설정 재로드가 필요할 수 있습니다.
+Codex·OpenCode·Claude Code·Antigravity·Gemini CLI의 개별 에이전트 섹션에서 새 MCP 등록·활성화·비활성화를 지원합니다. 로컬 명령·인자와 HTTP URL을 등록할 수 있고, 새 연결은 기본으로 비활성 설정을 저장합니다. 지원되는 환경 변수는 이름으로 참조하며 값은 가져오지 않습니다. Antigravity의 환경 변수 참조와 Antigravity·Gemini의 원격 토큰 참조 등록은 아직 지원하지 않습니다. 기존 인증 설정은 유지합니다. 변경 자체는 MCP 서버·모델·tool을 실행하지 않습니다. 실행 중인 에이전트에는 재시작·설정 재로드가 필요할 수 있습니다.
 
 대상 파일 선택 → 변경 미리보기 → 백업하고 적용 순서로 진행합니다. 미리보기는 10분 뒤 만료되며, 적용 직전에 파일과 부모 폴더를 다시 검사합니다. 변경을 발견하면 중단하고 재확인을 요구합니다. TOML·JSONC 주석과 다른 설정을 유지하고, 같은 이름의 기존 서버를 새 등록으로 덮어쓰지 않습니다. 링크 파일과 해석할 수 없는 형식은 변경하지 않습니다.
 
 원본과 복원 기록은 이 PC의 Backpack 앱 데이터 폴더에 저장합니다. Windows는 `%LOCALAPPDATA%/Backpack/backups`, macOS는 `~/Library/Application Support/Backpack/backups`, Linux는 `$XDG_DATA_HOME/Backpack/backups` 또는 `~/.local/share/Backpack/backups`입니다. 원본 백업에는 기존 파일의 인증 정보도 포함될 수 있으며, 레포·동기화 라이브러리에 넣지 않습니다. 적용 백업 목록에서 원본 복원을 확인할 수 있고, 현재 파일이 당시 적용 결과와 다르면 복원을 중단합니다. 새로 만든 파일을 복원하면 그 파일을 제거해 원래 상태로 되돌립니다.
 
-현재 Codex의 `config.toml`과 프로젝트 `.codex/config.toml`, OpenCode의 `opencode.json`·`opencode.jsonc`와 절대 경로 `OPENCODE_CONFIG`를 지원합니다. 설정 폴더가 먼저 존재해야 합니다. OpenCode v1의 `mcp.<name>` 형식만 변경하며 v2의 `mcp.servers` 형식은 지원하지 않습니다. Codex의 인라인 MCP 테이블에 새 서버를 추가하는 작업도 아직 지원하지 않습니다. 다른 에이전트의 설정 쓰기는 후속 구현 대상입니다.
+현재 Codex의 `config.toml`과 프로젝트 `.codex/config.toml`, OpenCode의 `opencode.json`·`opencode.jsonc`와 절대 경로 `OPENCODE_CONFIG`를 지원합니다. 설정 폴더가 먼저 존재해야 합니다. OpenCode v1의 `mcp.<name>` 형식만 변경하며 v2의 `mcp.servers` 형식은 지원하지 않습니다. Codex의 인라인 MCP 테이블에 새 서버를 추가하는 작업도 아직 지원하지 않습니다. Claude는 프로젝트 폴더 선택 후 `~/.claude.json`의 해당 프로젝트 로컬 MCP를 등록합니다. 사용자·공유 프로젝트의 기존 MCP도 프로젝트별 `disabledMcpServers` 목록으로 전환하며, 공유 `.mcp.json` 정의 자체는 변경하지 않습니다. 사용자 지정 Claude 설정 루트는 쓰기 위치가 확인되지 않아 탐지만 지원합니다.
 
-설정 규격: [Codex 설정](https://learn.chatgpt.com/docs/config-file/config-reference), [OpenCode MCP](https://opencode.ai/docs/mcp-servers/), [OpenCode 환경 변수 참조](https://opencode.ai/docs/config/).
+Antigravity는 `~/.gemini/config/mcp_config.json`과 프로젝트 `.agents/mcp_config.json`에서 `disabled`를 변경합니다. 원격 연결은 `serverUrl`로 등록합니다. 기존 `.agents/mcp.json`은 탐지 경로로 남기되 적용 여부를 미확인으로 표시합니다. Gemini는 사용자·프로젝트 `.gemini/settings.json`의 `mcp.excluded` 목록으로 전환하고, 로컬 환경 변수는 `${NAME}`, 원격 HTTP는 `httpUrl`로 등록합니다. 허용 목록은 자동으로 넓히지 않습니다. 파일 기준 활성 설정이 있어도 프로젝트 승인·다른 범위 설정·조직 정책이 실제 연결을 제한할 수 있습니다. 다른 에이전트의 쓰기는 후속 구현 대상입니다.
+
+설정 규격: [Codex 설정](https://learn.chatgpt.com/docs/config-file/config-reference), [OpenCode MCP](https://opencode.ai/docs/mcp-servers/), [OpenCode 환경 변수 참조](https://opencode.ai/docs/config/), [Claude MCP와 프로젝트별 비활성 목록](https://code.claude.com/docs/en/mcp), [Antigravity MCP](https://antigravity.google/docs/mcp), [Gemini MCP](https://geminicli.com/docs/tools/mcp-server/).
 
 ## 설계
 
