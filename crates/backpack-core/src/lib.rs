@@ -1,6 +1,7 @@
 pub mod changes;
 pub mod cli;
 pub mod codex;
+pub mod deploy;
 pub mod library;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -232,7 +233,12 @@ pub fn scan_at(home: &Path, request: ScanRequest) -> Result<Snapshot, String> {
             "antigravity" => {
                 scan_config(&mut agent, &root.join("config/hooks.json"), "사용자");
                 scan_config(&mut agent, &root.join("config/mcp_config.json"), "사용자");
-                scan_skills(&mut agent, &root.join("antigravity/skills"), "사용자");
+                scan_skills(&mut agent, &root.join("config/skills"), "사용자");
+                scan_skills(
+                    &mut agent,
+                    &root.join("antigravity/skills"),
+                    "사용자 (레거시 경로)",
+                );
                 scan_skills(&mut agent, &root.join("skills"), "사용자");
                 scan_rules(&mut agent, &root.join("antigravity/rules"), "사용자");
                 add_file(&mut agent, &root.join("GEMINI.md"), "rule", "사용자");

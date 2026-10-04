@@ -59,17 +59,17 @@ pub struct FileComparison {
     pub path: String,
     pub status: String,
 }
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-fn regular(path: &Path) -> Result<fs::Metadata, String> {
+pub(crate) fn regular(path: &Path) -> Result<fs::Metadata, String> {
     let meta = fs::symlink_metadata(path).map_err(|_| "파일이나 폴더에 접근하지 못했습니다.")?;
     if meta.file_type().is_symlink() {
         return Err("링크 파일·폴더는 라이브러리 작업에서 지원하지 않습니다.".into());
     }
     Ok(meta)
 }
-fn read(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read(path: &Path) -> Result<Vec<u8>, String> {
     let meta = regular(path)?;
     if !meta.is_file() || meta.len() > FILE_MAX {
         return Err("일반 파일과 파일당 2MB 이하만 지원합니다.".into());
@@ -132,7 +132,7 @@ pub fn connect(path: &str) -> Result<Vec<LibraryEntry>, String> {
     }
     list(path)
 }
-fn valid_path(path: &str) -> bool {
+pub(crate) fn valid_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() < 512
         && !path.contains(['\\', ':'])
@@ -144,7 +144,7 @@ fn valid_path(path: &str) -> bool {
             .split('/')
             .all(|p| !p.is_empty() && !p.ends_with(['.', ' ']) && portable_name(p))
 }
-fn portable_name(name: &str) -> bool {
+pub(crate) fn portable_name(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
     ![
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
@@ -230,7 +230,7 @@ fn blocked(name: &str) -> bool {
                 .unwrap_or(""),
         )
 }
-fn text_file(path: &str, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn text_file(path: &str, bytes: &[u8]) -> Result<(), String> {
     let ext = Path::new(path)
         .extension()
         .and_then(|s| s.to_str())
@@ -522,4 +522,34 @@ pub fn compare_at(
         files: result,
         identical,
     })
+}
+
+/// Validated immutable item bytes, never exposed through IPC.
+pub(crate) fn load_verified(
+    path: &str,
+    id: &str,
+) -> Result<(LibraryEntry, BTreeMap<String, Vec<u8>>), String> {
+    let store = storage(&root(path)?)?;
+    let entry = entry(&store, id)?;
+    let base = store.join("items").join(id).join("files");
+    regular(&base)?;
+    let mut payload = BTreeMap::new();
+    for file in &entry.files {
+        let target = base.join(&file.path);
+        let mut parent = target.parent();
+        while let Some(dir) = parent {
+            regular(dir)?;
+            if dir == base {
+                break;
+            }
+            parent = dir.parent();
+        }
+        let bytes = read(&target)?;
+        if digest(&bytes) != file.hash || bytes.len() != file.size {
+            return Err("라이브러리 파일 무결성 검사를 통과하지 못했습니다.".into());
+        }
+        text_file(&file.path, &bytes)?;
+        payload.insert(file.path.clone(), bytes);
+    }
+    Ok((entry, payload))
 }

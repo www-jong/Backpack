@@ -1,6 +1,9 @@
 use backpack_core::changes::{self, BackupReceipt, ChangePreview, McpDraft, PreparedChange};
 use backpack_core::cli::{inspect_cli, CliInspection};
 use backpack_core::codex::{inspect_codex, CodexInspection};
+use backpack_core::deploy::{
+    self, DeploymentData, DeploymentView, Installation, PreparedDeployment,
+};
 use backpack_core::library::{self, Comparison, ImportPreview, LibraryEntry, PreparedImport};
 use backpack_core::{scan, ScanRequest, Snapshot};
 use serde::Serialize;
@@ -274,6 +277,106 @@ async fn compare_library_item(
     .map_err(|_| "파일 비교를 완료하지 못했습니다.".to_string())?
 }
 
+#[derive(Default)]
+struct DeployState(Arc<Mutex<Option<PendingDeployment>>>);
+struct PendingDeployment {
+    token: String,
+    created: Instant,
+    patch: PreparedDeployment,
+}
+#[derive(Serialize)]
+struct DeploymentPreview {
+    token: String,
+    change: DeploymentView,
+}
+#[tauri::command]
+async fn library_deployment_data(
+    path: String,
+    item_id: String,
+    request: ScanRequest,
+) -> Result<DeploymentData, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        deploy::data_at(&home()?, &request, &path, &item_id, &deploy::record_root()?)
+    })
+    .await
+    .map_err(|_| "설치 정보를 읽지 못했습니다.".to_string())?
+}
+#[tauri::command]
+async fn preview_library_deployment(
+    path: String,
+    item_id: String,
+    target_id: String,
+    installation_id: String,
+    action: String,
+    request: ScanRequest,
+    state: tauri::State<'_, DeployState>,
+) -> Result<DeploymentPreview, String> {
+    let state = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut pending = state.lock().map_err(|_| "설치 상태를 읽지 못했습니다.")?;
+        *pending = None;
+        let patch = if action == "install" {
+            deploy::prepare_install_at(
+                &home()?,
+                &request,
+                &path,
+                &item_id,
+                &target_id,
+                &deploy::record_root()?,
+            )?
+        } else {
+            deploy::prepare_existing_at(
+                &home()?,
+                &request,
+                &installation_id,
+                &action,
+                &deploy::record_root()?,
+            )?
+        };
+        let token = format!(
+            "{:x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let result = DeploymentPreview {
+            token: token.clone(),
+            change: patch.view.clone(),
+        };
+        *pending = Some(PendingDeployment {
+            token,
+            created: Instant::now(),
+            patch,
+        });
+        Ok(result)
+    })
+    .await
+    .map_err(|_| "설치 미리보기를 만들지 못했습니다.".to_string())?
+}
+#[tauri::command]
+async fn apply_library_deployment(
+    token: String,
+    state: tauri::State<'_, DeployState>,
+    inspection: tauri::State<'_, InspectionState>,
+) -> Result<Installation, String> {
+    begin_edit(&inspection)?;
+    let state = state.0.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut pending = state.lock().map_err(|_| "설치 상태를 읽지 못했습니다.")?;
+        let current = pending.as_ref().ok_or("먼저 미리보기를 확인하세요.")?;
+        if current.token != token || current.created.elapsed() > Duration::from_secs(600) {
+            return Err("미리보기가 만료됐습니다. 다시 확인하세요.".into());
+        }
+        deploy::apply(pending.take().ok_or("미리보기가 없습니다.")?.patch)
+    })
+    .await
+    .map_err(|_| "설치 변경을 완료하지 못했습니다.".to_string())
+    .and_then(|r| r);
+    end_edit(&inspection);
+    result
+}
+
 #[tauri::command]
 async fn scan_inventory(request: ScanRequest) -> Result<Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || scan(request))
@@ -353,8 +456,12 @@ pub fn run() {
         .manage(InspectionState::default())
         .manage(EditorState::default())
         .manage(LibraryState::default())
+        .manage(DeployState::default())
         .invoke_handler(tauri::generate_handler![
             scan_inventory,
+            library_deployment_data,
+            preview_library_deployment,
+            apply_library_deployment,
             connect_library,
             list_library,
             preview_library_import,
