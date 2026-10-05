@@ -12,7 +12,11 @@ struct Fixture {
     records: PathBuf,
 }
 fn setup() -> Fixture {
-    let dir = TempDir::new().unwrap();
+    let temp_root = std::env::temp_dir();
+    // macOS의 /var 별칭이 설치 경로의 링크 차단 검사에 걸리지 않게 합니다.
+    #[cfg(unix)]
+    let temp_root = temp_root.canonicalize().unwrap();
+    let dir = TempDir::new_in(temp_root).unwrap();
     let home = dir.path();
     let source = home.join(".codex/skills/sample/scripts");
     fs::create_dir_all(&source).unwrap();
